@@ -17,5 +17,6 @@ export interface AvailableFunction {
 export interface IntentDefinition {
   id: string;
   label: string;
-  examples?: string[]; // Added optional examples array
+  examples: string[];
+  // response: string
 }
