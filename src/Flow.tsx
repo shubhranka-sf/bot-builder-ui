@@ -21,13 +21,14 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import { Bot, Zap, FlagOff, Plus, Settings, PlayCircle } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import {saveAs} from 'file-saver'
+import { saveAs } from "file-saver";
 import StartNode from "./components/nodes/StartNode";
 import IntentNode from "./components/nodes/IntentNode";
 import ActionNode from "./components/nodes/ActionNode";
 import EndNode from "./components/nodes/EndNode";
 import Sidebar from "./components/Sidebar";
 import { ActionDefinition } from "./types";
+import ChatBotWidget from "./components/ChatBotWidget";
 
 // Initial node in Canvas
 const initialNodes: Node[] = [
@@ -88,6 +89,7 @@ function FlowContent() {
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
   const [isFabMenuOpen, setIsFabMenuOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [messages, setMessages] = useState([]);
   const fabRef = useRef<HTMLDivElement>(null);
   const {
     setNodes: rfSetNodes,
@@ -101,7 +103,7 @@ function FlowContent() {
   const [definedActions, setDefinedActions] = useState<ActionDefinition[]>([
     {
       title: "Send Message",
-      name: "SendMessage",
+      name: "utter_sendmessage",
       value: "Default message text...",
       valueType: "text",
     },
@@ -414,6 +416,15 @@ function FlowContent() {
     },
   };
 
+  // chatbot things.........................................................
+  const handleNewMessage = (message: string) => {
+    setMessages((prevMessages) => [...prevMessages, message]);
+  };
+  const onBotResponse = (response: string) => {
+    const botMessage = { role: "assistant", content: response };
+    setMessages((prevMessages) => [...prevMessages, botMessage]);
+  };
+
   return (
     <div className="h-screen w-screen flex overflow-hidden">
       {/* Main Flow Area */}
@@ -521,6 +532,31 @@ function FlowContent() {
           >
             <Plus size={28} />
           </motion.button>
+          <ChatBotWidget
+            callApi={async (message) => {
+              const data = await fetch(
+                `${import.meta.env.VITE_BACKEND_BASE_URL}/predict`,
+                {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify({
+                    text: message,
+                    sender_id: "user1",
+                    model_name: "default_model.tar.gz",
+                  }),
+                }
+              );
+              const res = await data.json();
+              return res.response[0].text;
+            }}
+            handleNewMessage={handleNewMessage}
+            onBotResponse={onBotResponse}
+            messages={messages}
+            primaryColor="#4F46E5"
+            botIcon={<>CB</>}
+          />
         </div>
       </div>
 
