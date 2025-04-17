@@ -21,13 +21,14 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 import { Bot, Zap, FlagOff, Plus, Settings, PlayCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { saveAs } from 'file-saver';
+// import { saveAs } from 'file-saver';
 import StartNode from './components/nodes/StartNode';
 import IntentNode from './components/nodes/IntentNode';
 import ActionNode from './components/nodes/ActionNode';
 import EndNode from './components/nodes/EndNode';
 import Sidebar from './components/Sidebar';
 import { ActionDefinition } from './types';
+import ChatBotWidget from './components/ChatBotWidget';
 
 // Initial node in Canvas
 const initialNodes: Node[] = [
@@ -43,9 +44,8 @@ const initialNodes: Node[] = [
     type: 'action',
     position: { x: 550, y: 200 },
     data: {
-      actionId: 'utter_ask',
       title: 'Send Greeting', // Added title
-      name: 'SendMessage',
+      name: 'utter_sendmessage',
       value: 'Hello! How can I help you today?',
       valueType: 'text', // Added valueType
     },
@@ -96,8 +96,9 @@ function FlowContent() {
   // State for defined actions (could come from API/storage later)
   const [definedActions, setDefinedActions] = useState<ActionDefinition[]>([
     {
+      // action_id: '1',
       title: 'Send Message',
-      name: 'SendMessage',
+      name: 'utter_sendmessage',
       value: 'Default message text...',
       valueType: 'text',
     },
@@ -170,16 +171,13 @@ function FlowContent() {
     const traverse = (currentNodeId: string) => {
       // Get outgoing edges
       const outgoingEdges = edges.filter((edge) => edge.source === currentNodeId);
-
       for (const edge of outgoingEdges) {
         if (!visitedNodes.has(edge.target)) {
           visitedNodes.add(edge.target);
           const targetNode = nodes.find((node) => node.id === edge.target);
-
           if (targetNode) {
             flowNodes.push(targetNode);
             flowEdges.push(edge);
-
             // Stop if we reach the end node
             if (targetNode.type !== 'end') {
               traverse(targetNode.id);
@@ -200,75 +198,117 @@ function FlowContent() {
     }
   }, [nodes, edges]);
 
-  // Function to export data as JSON with intents and responses format
+  // Function to export data as JSON
   const exportFlowData = useCallback(() => {
-    const { nodes: flowNodes } = getFlowDataBetweenStartAndEnd();
+    const { nodes: flowNodes, edges: flowEdges } = getFlowDataBetweenStartAndEnd();
+    console.log('Flow nodes and edges for export:', flowNodes, flowEdges);
 
-    // Define the types for our export data structure
-    interface IntentData {
-      name: string;
-      examples: string[];
-      entities: any[];
-      response: string;
-    }
-
-    // interface ResponseData {
-    //   name: string;
-    //   texts: string[];
-    // }
-
-    // Initialize our output format structure with proper typing
-    const exportData: {
-      intents: IntentData[];
-      // responses: ResponseData[];
-    } = {
-      intents: [],
-      // responses: [],
-    };
-
-    // Process nodes to categorize them
-    flowNodes.forEach((node) => {
-      // Handle intent nodes
-      console.log('flowNodes', node);
-
-      if (node.type === 'intent' || node.type === 'action') {
-        const intentData: IntentData = {
-          name: node.data.name || `intent_${node.id}`,
+    // Extract intents
+    const intents = flowNodes
+      .filter((node) => node.type === 'intent')
+      .map((node) => {
+        const intentObj = {
+          name: node.data.intentId || `intent_${node.id}`,
           examples: node.data.examples || [],
-          entities: node.data.entities || [],
-          response: node.data.value || '',
+          entities: [],
         };
-        exportData.intents.push(intentData);
+        console.log('Intent node data:', node.data);
+
+        return intentObj;
+      });
+
+    // Extract actions
+    const actions = flowNodes
+      .filter((node) => node.type === 'action')
+      .map((node) => ({
+        type: node.data.valueType || 'text',
+        name: node.data.name || `action_${node.id}`,
+        value: node.data.value || '',
+      }));
+
+    // Build stories
+    const stories = [];
+    const startNode = flowNodes.find((node) => node.type === 'start');
+    if (startNode) {
+      const storySteps = [];
+      let currentNode = startNode;
+
+      // Traverse the flow using edges
+      while (currentNode && currentNode.type !== 'end') {
+        // Find the outgoing edge
+        const outgoingEdge = flowEdges.find((edge) => edge.source === currentNode.id);
+        if (!outgoingEdge) break; // No further connection
+
+        const nextNode = flowNodes.find((node) => node.id === outgoingEdge.target);
+        if (!nextNode) break; // No target node
+
+        // Add step based on node type
+        if (nextNode.type === 'intent') {
+          storySteps.push({
+            node: 'intent',
+            name: nextNode.data.intentId || `intent_${nextNode.id}`,
+          });
+        } else if (nextNode.type === 'action') {
+          storySteps.push({
+            node: 'action',
+            name: nextNode.data.name || `action_${nextNode.id}`,
+          });
+        }
+
+        currentNode = nextNode;
       }
 
-      // Handle action/response nodes
-      // if (node.type === 'action') {
-      //   const responseData: ResponseData = {
-      //     name: node.data.name || `utter_${node.id}`,
-      //     texts: node.data.texts || [],
-      //   };
-      //   exportData.responses.push(responseData);
-      // }
-    });
+      // Add story if there are valid steps
+      if (storySteps.length > 0) {
+        stories.push({
+          name: startNode.data.storyName || 'greeting_flow', // Use storyName from start node or default
+          steps: storySteps,
+        });
+      }
+    }
 
-    // Convert to JSON string
-    const jsonString = JSON.stringify(exportData, null, 2);
-
-    // Create and download file
-    const blob = new Blob([jsonString], { type: 'application/json' });
-    saveAs(blob, 'conversation-flow.json');
+    // Create JSON object
+    const exportData = {
+      intents,
+      actions,
+      stories,
+    };
+    // Send data to API
+    fetch(`${import.meta.env.VITE_BACKEND_BASE_URL}/train`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(exportData),
+    })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error('Failed to send data to the API');
+        }
+        return response.json();
+      })
+      .then((data) => {
+        console.log('✅ API response:', data);
+      })
+      .catch((error) => {
+        console.error('❌ Error sending data to API:', error);
+      });
   }, [getFlowDataBetweenStartAndEnd]);
+
   const updateIntentNode = useCallback(
-    (nodeId: string, newIntentId: string) => {
+    (nodeId: string, updatedData: Partial<Node['data']>) => {
+      console.log('Updating intent node with ID:', nodeId, 'Data:', updatedData);
+
       setNodes((nds) =>
         nds.map((node) =>
-          node.id === nodeId ? { ...node, data: { ...node.data, intentId: newIntentId } } : node
+          node.id === nodeId
+            ? { ...node, data: { ...node.data, ...updatedData } } // Merge new data with existing data
+            : node
         )
       );
-      // Update selected node state if it's the one being changed
       setSelectedNode((prev) =>
         prev && prev.id === nodeId
-          ? { ...prev, data: { ...prev.data, intentId: newIntentId } }
+          ? { ...prev, data: { ...prev.data, ...updatedData } } // Update selected node state
           : prev
       );
     },
@@ -321,48 +361,30 @@ function FlowContent() {
       );
     }
   }, [selectedNode, rfSetNodes, getNodes]);
-  const getCenterPosition = useCallback((): XYPosition => {
-    const flowPane = document.querySelector('.react-flow__node-start');
-    console.log('flowPane', flowPane);
 
+  const getCenterPosition = useCallback((): XYPosition => {
+    const flowPane = document.querySelector('.react-flow__pane');
     if (flowPane) {
       const bounds = flowPane.getBoundingClientRect();
       return screenToFlowPosition({
-        x: bounds.width,
-        y: bounds.height,
+        x: bounds.width / 2,
+        y: bounds.height / 3,
       });
     }
     return { x: 200 + Math.random() * 50, y: 100 + Math.random() * 50 };
   }, [screenToFlowPosition]);
 
-  const getPositionNearStartNode = useCallback((): XYPosition => {
-    const startNodeEl = document.querySelector('.react-flow__node-start');
-
-    if (startNodeEl) {
-      const bounds = startNodeEl.getBoundingClientRect();
-
-      // Offset new node to the right of the start node
-      const offset = 100;
-      const pos = screenToFlowPosition({
-        x: bounds.left + bounds.width / 2,
-        y: bounds.top - offset,
-      });
-      return pos;
-    }
-
-    // Fallback to center position if start node not found
-    return getCenterPosition();
-  }, [screenToFlowPosition, getCenterPosition]);
-
   const handleAddNode = useCallback(
     (type: 'intent' | 'action' | 'end' | 'start') => {
-      const position = getPositionNearStartNode();
-      // console.log('Position:', position);
-
+      const position = getCenterPosition();
+      const currentDateTime = new Date().toISOString(); // Get current date and time in ISO format
       let newNodeData: any = {}; // Use 'any' temporarily or define a broader type
-      if (type === 'intent') {
-        newNodeData = { intentId: 'intent_greet', examples: [] };
+      if (type === 'start') {
+        newNodeData = { storyName: `story_${currentDateTime}` }; // Default story name
+      } else if (type === 'intent') {
+        newNodeData = { intentId: 'intent_greet', examples: [] }; // Default intent
       } else if (type === 'action') {
+        // Use the first defined action as default or a generic placeholder
         const defaultAction = definedActions[0] || {
           title: 'New Action',
           name: 'NewAction',
@@ -374,12 +396,10 @@ function FlowContent() {
       // Start and End nodes have empty data initially
 
       const newNode: Node = { id: getId(), type, position, data: newNodeData };
-      console.log('newNodes', newNode);
-
       addNodes(newNode);
       setIsFabMenuOpen(false);
     },
-    [addNodes, getPositionNearStartNode, definedActions]
+    [addNodes, getCenterPosition, definedActions] // Add definedActions dependency
   );
 
   // Callback to add a newly defined action type
@@ -473,12 +493,14 @@ function FlowContent() {
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
           >
-            Export Flow
+            Built Bot
           </motion.button>
         </div>
         {/* Floating Configuration Button */}
         {selectedNode &&
-          (selectedNode.type === 'intent' || selectedNode.type === 'action') &&
+          (selectedNode.type === 'intent' ||
+            selectedNode.type === 'action' ||
+            selectedNode.type === 'start') &&
           !isSidebarOpen && (
             <div className="absolute bottom-24 right-6 z-30">
               <motion.button
