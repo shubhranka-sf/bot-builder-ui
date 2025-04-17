@@ -3,7 +3,7 @@ import { Handle, Position, NodeProps } from 'reactflow';
 import { Bot } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { IntentDefinition } from '../../types'; // Import type
-import { mockIntents } from '../../data/mockData'; // Import mock data
+import { mockIntents } from '../../../data/mockData'; // Import mock data
 
 // No longer define intents here
 

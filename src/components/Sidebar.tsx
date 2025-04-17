@@ -1,48 +1,52 @@
-// File: Sidebar.tsx
-
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Node } from 'reactflow';
-import { Bot, Zap, X, PlusCircle, Type, Code, Edit, GitBranch, Replace, Check } from 'lucide-react';
-import { ActionDefinition, AvailableFunction, IntentDefinition } from '../types'; // Import types
-import { mockIntents, mockAvailableFunctions } from '../data/mockData'; // Import mock data
+import { Bot, Zap, X, PlusCircle, Type, Code, Edit, GitBranch, Replace, Check, PlayCircle, FlagOff, AlertTriangle, Search, ChevronLeft } from 'lucide-react';
+import { ActionDefinition, AvailableFunction, IntentDefinition, StartNodeData, IntentNodeData, ActionNodeData } from '../types';
+import { mockAvailableFunctions } from '../../data/mockData'; // mockIntents are now passed as props
 
 interface SidebarProps {
-  selectedNode: Node | null;
-  definedActions: ActionDefinition[]; // Receive defined actions from Flow state
-  onUpdateIntent: (nodeId: string, newIntentId: string, examples?: string[]) => void; // Added examples
-  onUpdateAction: (nodeId: string, actionData: Partial<ActionDefinition>) => void; // Allow partial updates
+  selectedNode: Node<StartNodeData | IntentNodeData | ActionNodeData | any> | null;
+  intents: IntentDefinition[];
+  definedActions: ActionDefinition[];
+  onUpdateStartNode: (nodeId: string, newStoryName: string) => void;
+  onUpdateIntent: (nodeId: string, newIntentId: string, examples?: string[]) => void; // examples optional for Change Intent
+  onUpdateAction: (nodeId: string, actionData: Partial<ActionNodeData>) => void; // Can be partial for Change Action
+  // Removed onChangeNodeType prop
+  onAddNewIntentDefinition: (newIntent: IntentDefinition) => void;
   onAddNewActionDefinition: (newAction: ActionDefinition) => void;
   onClose: () => void;
 }
 
-type SidebarMode = 'view' | 'edit' | 'change';
+type SidebarMode = 'view' | 'edit';
 type ValueInputType = 'text' | 'function';
 
 const Sidebar: React.FC<SidebarProps> = ({
   selectedNode,
-  definedActions, // Use this prop for the list of assignable actions
+  intents,
+  definedActions,
+  onUpdateStartNode,
   onUpdateIntent,
   onUpdateAction,
+  onAddNewIntentDefinition,
   onAddNewActionDefinition,
   onClose
 }) => {
   const [mode, setMode] = useState<SidebarMode>('view');
+  const [isChangingDefinition, setIsChangingDefinition] = useState(false); // State for change intent/action UI
+  const [searchTerm, setSearchTerm] = useState(''); // State for search filter
 
-  // --- State for Node Configuration (used in edit/change modes) ---
-  // Action Node State
-  const [currentActionConfig, setCurrentActionConfig] = useState<Partial<ActionDefinition>>({});
+  // State for configurations (used ONLY in EDIT mode)
+  const [currentStoryName, setCurrentStoryName] = useState<string>('');
+  const [currentActionConfig, setCurrentActionConfig] = useState<Partial<ActionNodeData>>({});
   const [currentValueInputType, setCurrentValueInputType] = useState<ValueInputType>('text');
-  // Intent Node State
   const [currentIntentId, setCurrentIntentId] = useState<string>('');
-  const [currentExamples, setCurrentExamples] = useState<string[]>([]); // State for examples being edited
+  const [currentExamples, setCurrentExamples] = useState<string[]>([]);
 
-  // --- State for New Intent Dialog ---
+  // State for Dialogs
   const [showIntentDialog, setShowIntentDialog] = useState(false);
-  const [newIntentLabel, setNewIntentLabel] = useState(''); // Changed from Name to Label
-  const [newIntentId, setNewIntentId] = useState(''); // Added ID field
+  const [newIntentLabel, setNewIntentLabel] = useState('');
+  const [newIntentId, setNewIntentId] = useState('');
   const [newIntentExamples, setNewIntentExamples] = useState<string[]>(['']);
-
-  // --- State for New Action Dialog ---
   const [showActionDialog, setShowActionDialog] = useState(false);
   const [newActionTitle, setNewActionTitle] = useState('');
   const [newActionName, setNewActionName] = useState('');
@@ -51,733 +55,623 @@ const Sidebar: React.FC<SidebarProps> = ({
 
 
   // --- Effects ---
-  // Initialize local state when selectedNode changes or mode changes back to view
   useEffect(() => {
+    // This effect now ONLY resets the mode/state when the selected node *identity* changes.
+    // It doesn't need to re-sync data constantly, as that's handled by the parent via props.
     if (selectedNode) {
-        if (selectedNode.type === 'intent') {
-            const intentData = selectedNode.data || {};
-            setCurrentIntentId(intentData.intentId || '');
-            // Ensure examples is an array, default to empty if missing or not array
-            setCurrentExamples(Array.isArray(intentData.examples) ? [...intentData.examples] : []);
-        } else if (selectedNode.type === 'action') {
-            const actionData = selectedNode.data || {};
-            const initialConfig = {
-                title: actionData.title || actionData.name || '',
-                name: actionData.name || '',
-                value: actionData.value || '',
-                valueType: actionData.valueType || 'text',
-            };
-            setCurrentActionConfig(initialConfig);
-            setCurrentValueInputType(initialConfig.valueType || 'text');
-        }
+        console.log('Sidebar useEffect [selectedNode changed]: Resetting mode and change state. New Node ID:', selectedNode?.id);
+        setMode('view');
+        setIsChangingDefinition(false);
+        setSearchTerm(''); // Reset search term too
+
+        // Initialize edit state *once* when node changes, in case user goes to edit mode later
+        const nodeData = selectedNode.data || {};
+         if (selectedNode.type === 'start') {
+             setCurrentStoryName(nodeData.storyName || '');
+         } else if (selectedNode.type === 'intent') {
+             setCurrentIntentId(nodeData.intentId || '');
+             setCurrentExamples(Array.isArray(nodeData.examples) ? [...nodeData.examples] : []);
+         } else if (selectedNode.type === 'action') {
+             setCurrentActionConfig({
+                title: nodeData.title || nodeData.name || '',
+                name: nodeData.name || '',
+                value: nodeData.value || '',
+                valueType: nodeData.valueType || 'text',
+            });
+             setCurrentValueInputType(nodeData.valueType || 'text');
+         }
     } else {
-        // Reset if no node is selected
+         // Reset all config states if no node is selected
+        setCurrentStoryName('');
         setCurrentIntentId('');
         setCurrentExamples([]);
         setCurrentActionConfig({});
         setCurrentValueInputType('text');
+        setMode('view');
+        setIsChangingDefinition(false);
+        setSearchTerm('');
     }
-    // Always reset to view mode when the selected node changes
-    setMode('view');
 
-  }, [selectedNode]); // Rerun only when selected node changes
+  }, [selectedNode]); // Only depends on selectedNode identity changing
 
   // --- Event Handlers ---
-
-  // Switch to a different mode (view, edit, change)
-  const handleSetMode = (newMode: SidebarMode) => {
+   const handleSetMode = useCallback((newMode: SidebarMode) => {
     setMode(newMode);
-    // Re-initialize edit state if switching TO edit mode
+    setIsChangingDefinition(false); // Ensure change mode is off when switching to edit/view
+    setSearchTerm(''); // Reset search
+    // Re-initialize edit state ONLY IF switching TO edit mode (to discard potential stale state)
      if (newMode === 'edit' && selectedNode) {
-        if (selectedNode.type === 'intent') {
-             setCurrentIntentId(selectedNode.data.intentId || '');
-             setCurrentExamples(Array.isArray(selectedNode.data.examples) ? [...selectedNode.data.examples] : []);
-        } else if (selectedNode.type === 'action') {
-            const actionData = selectedNode.data || {};
+         console.log("Switching to Edit Mode, re-initializing edit state from selectedNode data.");
+         const nodeData = selectedNode.data || {};
+         if (selectedNode.type === 'start') {
+             setCurrentStoryName(nodeData.storyName || '');
+         } else if (selectedNode.type === 'intent') {
+             setCurrentIntentId(nodeData.intentId || '');
+             setCurrentExamples(Array.isArray(nodeData.examples) ? [...nodeData.examples] : []);
+         } else if (selectedNode.type === 'action') {
              setCurrentActionConfig({
-                title: actionData.title || actionData.name || '',
-                name: actionData.name || '',
-                value: actionData.value || '',
-                valueType: actionData.valueType || 'text',
+                title: nodeData.title || nodeData.name || '',
+                name: nodeData.name || '',
+                value: nodeData.value || '',
+                valueType: nodeData.valueType || 'text',
             });
-             setCurrentValueInputType(actionData.valueType || 'text');
-        }
+             setCurrentValueInputType(nodeData.valueType || 'text');
+         }
      }
-  };
+   }, [selectedNode]); // Depends on selectedNode to re-read data if needed
+
+   // --- Start Node Handlers ---
+   const handleStoryNameChange = useCallback((newName: string) => { setCurrentStoryName(newName); }, []);
+   const handleStartNodeEditSave = useCallback(() => {
+      if (selectedNode && selectedNode.type === 'start') {
+          onUpdateStartNode(selectedNode.id, currentStoryName.trim() || 'Default Start Story');
+          handleSetMode('view'); // Switch back to view after save
+      }
+   }, [selectedNode, onUpdateStartNode, currentStoryName, handleSetMode]);
+
+   // --- Intent Node Handlers (Edit Mode) ---
+   const handleIntentIdEditChange = useCallback((newId: string) => {
+      setCurrentIntentId(newId);
+      // Update examples based on selected intent definition in edit mode
+      const selectedIntentDef = intents.find(i => i.id === newId);
+      setCurrentExamples(selectedIntentDef?.examples ? [...selectedIntentDef.examples] : []);
+   }, [intents]); // Added intents dependency
+
+   const handleExampleChange = useCallback((index: number, value: string) => {
+      setCurrentExamples(prev => {
+         const newInputs = [...prev];
+         newInputs[index] = value;
+         return newInputs;
+      });
+   }, []);
+
+   const handleAddExampleInput = useCallback(() => setCurrentExamples(prev => [...prev, '']), []);
+
+   const handleRemoveExampleInput = useCallback((index: number) => {
+      setCurrentExamples(prev => prev.filter((_, i) => i !== index));
+   }, []);
+
+   const handleIntentEditSave = useCallback(() => {
+     if (selectedNode && selectedNode.type === 'intent') {
+         const finalIntentId = currentIntentId.trim();
+         if (!finalIntentId) {
+             alert("Intent ID cannot be empty.");
+             return;
+         }
+         // Pass the edited examples to the update function
+         const finalExamples = currentExamples.map(e => e.trim()).filter(e => e);
+         onUpdateIntent(selectedNode.id, finalIntentId, finalExamples);
+         handleSetMode('view'); // Switch back to view mode
+     }
+   }, [selectedNode, onUpdateIntent, currentIntentId, currentExamples, handleSetMode]);
 
 
-  // Called when selecting an intent from the list (in 'change' mode)
-  const handleIntentSelect = (intentId: string) => {
-    if (selectedNode && selectedNode.type === 'intent') {
-      // Find the selected intent definition to potentially get its default examples
-      const selectedIntentDef = mockIntents.find(i => i.id === intentId);
-      const examples = selectedIntentDef?.examples || [];
-      onUpdateIntent(selectedNode.id, intentId, examples); // Update the actual node data
-      handleSetMode('view'); // Exit change mode after selection
-    }
-  };
+   // --- Action Node Handlers (Edit Mode) ---
+   const handleActionConfigChange = useCallback((field: keyof ActionNodeData, value: string | ValueInputType) => {
+       setCurrentActionConfig(prev => {
+           const newState = { ...prev, [field]: value };
+           // Auto-update title if name changes and title was unset or same as old name
+           if (field === 'name' && (!newState.title || newState.title === prev.name)) {
+               newState.title = value as string;
+           }
+           return newState;
+       });
+   }, []);
 
-  // Called when selecting a pre-defined action from the list (in 'change' mode)
-  const handleDefinedActionSelect = (action: ActionDefinition) => {
-    if (selectedNode && selectedNode.type === 'action') {
-      const newConfig = { // Prepare the full data object
-        title: action.title,
-        name: action.name,
-        value: action.value,
-        valueType: action.valueType,
-      };
-      onUpdateAction(selectedNode.id, newConfig); // Update the actual node data
-      handleSetMode('view'); // Exit change mode after applying
-    }
-  };
-
-  // -- Edit Mode Handlers --
-
-  // Update action config fields during editing
-  const handleActionConfigChange = (field: keyof ActionDefinition, value: string | ValueInputType) => {
-    setCurrentActionConfig(prev => ({ ...prev, [field]: value }));
-  };
-
-  // Toggle action value type during editing
-   const handleValueTypeToggle = (type: ValueInputType) => {
+   const handleValueTypeToggle = useCallback((type: ValueInputType) => {
      setCurrentValueInputType(type);
-     // Reset value based on new type (select first available function or empty string)
      const newValue = type === 'function' ? (mockAvailableFunctions[0]?.name || '') : '';
+     // Update both config state and specific value type state
      setCurrentActionConfig(prev => ({
        ...prev,
        value: newValue,
        valueType: type
      }));
-   };
+   }, []);
 
-  // Save changes made in Action Edit mode
-  const handleActionEditSave = () => {
-    if (selectedNode && selectedNode.type === 'action') {
-      onUpdateAction(selectedNode.id, currentActionConfig);
-      handleSetMode('view'); // Switch back to view mode
-    }
-  };
+   const handleActionEditSave = useCallback(() => {
+       if (selectedNode && selectedNode.type === 'action') {
+           const finalName = currentActionConfig.name?.trim();
+           if (!finalName) {
+               alert("Action Name (Identifier) is required.");
+               return; // Prevent saving without a name
+           }
+           // Pass the complete edited configuration
+           const finalConfig: ActionNodeData = {
+               name: finalName,
+               title: currentActionConfig.title?.trim() || finalName,
+               value: currentActionConfig.value || '',
+               valueType: currentValueInputType, // Use state for valueType
+           };
+           onUpdateAction(selectedNode.id, finalConfig);
+           handleSetMode('view'); // Switch back to view mode
+       }
+   }, [selectedNode, onUpdateAction, currentActionConfig, currentValueInputType, handleSetMode]);
 
-  // Update intent ID during editing
-  const handleIntentIdChange = (newId: string) => {
-      setCurrentIntentId(newId);
-  };
+   // --- Change Definition Handlers (View Mode) ---
+   const handleChangeIntentClick = useCallback((newIntentId: string) => {
+       if (selectedNode && selectedNode.type === 'intent') {
+           onUpdateIntent(selectedNode.id, newIntentId); // Examples will be updated from definition by onUpdateIntent
+           setIsChangingDefinition(false); // Exit change mode
+           setSearchTerm('');
+       }
+   }, [selectedNode, onUpdateIntent]);
 
-  // Update intent example input during editing
-  const handleExampleChange = (index: number, value: string) => {
-    setCurrentExamples(prev => {
-      const newInputs = [...prev];
-      newInputs[index] = value;
-      return newInputs;
-    });
-  };
+   const handleChangeActionClick = useCallback((newActionName: string) => {
+        if (selectedNode && selectedNode.type === 'action') {
+           // Only pass the name; onUpdateAction will fetch the rest from definition
+           onUpdateAction(selectedNode.id, { name: newActionName });
+           setIsChangingDefinition(false); // Exit change mode
+           setSearchTerm('');
+       }
+   }, [selectedNode, onUpdateAction]);
 
-  // Add a new example input field during editing
-  const handleAddExampleInput = () => setCurrentExamples(prev => [...prev, '']);
+   // --- Dialog Handlers ---
+   const handleAddIntentExampleInput = useCallback(() => setNewIntentExamples((prev) => [...prev, '']), []);
+   const handleNewIntentExampleChange = useCallback((index: number, value: string) => { /* ... keep existing ... */ setNewIntentExamples((prev) => { const newInputs = [...prev]; newInputs[index] = value; return newInputs; }); }, []);
+   const handleRemoveNewIntentExample = useCallback((index: number) => { /* ... keep existing ... */ setNewIntentExamples(prev => prev.filter((_, i) => i !== index)); }, []);
+   const handleIntentDialogSubmit = useCallback(() => { /* ... keep existing (uses onAddNewIntentDefinition) ... */
+        const intentLabel = newIntentLabel.trim();
+        const intentId = newIntentId.trim().replace(/\s+/g, '_').toLowerCase();
+        const examplesArray = newIntentExamples.map(example => example.trim()).filter(example => example);
+        if (!intentLabel || !intentId) { alert("Intent Label and ID are required."); return; }
+        if (intents.some(i => i.id === intentId)) { alert(`Intent ID "${intentId}" already exists.`); return; }
+        const newIntentDef: IntentDefinition = { id: intentId, label: intentLabel, examples: examplesArray };
+        onAddNewIntentDefinition(newIntentDef);
+        setNewIntentLabel(''); setNewIntentId(''); setNewIntentExamples(['']); setShowIntentDialog(false);
+    }, [newIntentLabel, newIntentId, newIntentExamples, intents, onAddNewIntentDefinition]);
 
-  // Remove an example input field during editing
-  const handleRemoveExampleInput = (index: number) => {
-      setCurrentExamples(prev => prev.filter((_, i) => i !== index));
-  };
+   const handleNewActionValueTypeToggle = useCallback((type: ValueInputType) => { /* ... keep existing ... */ setNewActionValueType(type); setNewActionValue(type === 'function' ? (mockAvailableFunctions[0]?.name || '') : ''); }, []);
+   const handleActionDialogSubmit = useCallback(() => { /* ... keep existing (uses onAddNewActionDefinition) ... */
+        const actionTitle = newActionTitle.trim();
+        const actionName = newActionName.trim().replace(/\s+/g, '_').toLowerCase();
+        if (!actionName) { alert("Action Name (Identifier) is required."); return; }
+        if (definedActions.some(a => a.name === actionName)) { alert(`Action Name "${actionName}" already exists.`); return; }
+        const newActionDefinition: ActionDefinition = { title: actionTitle || actionName, name: actionName, value: newActionValue, valueType: newActionValueType, };
+        onAddNewActionDefinition(newActionDefinition);
+        setNewActionTitle(''); setNewActionName(''); setNewActionValue(''); setNewActionValueType('text'); setShowActionDialog(false);
+   }, [newActionTitle, newActionName, newActionValue, newActionValueType, definedActions, onAddNewActionDefinition]);
 
 
-  // Save changes made in Intent Edit mode
-  const handleIntentEditSave = () => {
-    if (selectedNode && selectedNode.type === 'intent') {
-        // Filter out empty examples before saving
-        const finalExamples = currentExamples.map(e => e.trim()).filter(e => e);
-        onUpdateIntent(selectedNode.id, currentIntentId, finalExamples);
-        handleSetMode('view'); // Switch back to view mode
-    }
-  };
+   // --- Filtering Logic ---
+   const filteredIntents = useMemo(() =>
+       intents.filter(intent =>
+           intent.label.toLowerCase().includes(searchTerm.toLowerCase()) ||
+           intent.id.toLowerCase().includes(searchTerm.toLowerCase())
+       ), [intents, searchTerm]);
 
-  // --- New Intent Dialog Handlers ---
-  const handleAddIntentExampleInput = () => setNewIntentExamples((prev) => [...prev, '']);
-  const handleNewIntentExampleChange = (index: number, value: string) => {
-    setNewIntentExamples((prev) => {
-      const newInputs = [...prev];
-      newInputs[index] = value;
-      return newInputs;
-    });
-  };
-   const handleRemoveNewIntentExample = (index: number) => {
-       setNewIntentExamples(prev => prev.filter((_, i) => i !== index));
-   };
+   const filteredActions = useMemo(() =>
+       definedActions.filter(action =>
+           action.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+           action.name.toLowerCase().includes(searchTerm.toLowerCase())
+       ), [definedActions, searchTerm]);
 
-  const handleIntentDialogSubmit = () => {
-    const intentLabel = newIntentLabel.trim();
-    const intentId = newIntentId.trim();
-    const examplesArray = newIntentExamples.map(example => example.trim()).filter(example => example);
-
-    if (!intentLabel || !intentId) {
-        alert("Intent Label and ID are required.");
-        return;
-    }
-    if (mockIntents.some(i => i.id === intentId)) { // Basic check for duplicate ID
-        alert(`Intent ID "${intentId}" already exists.`);
-        return;
-    }
-
-    const newIntentDef: IntentDefinition = { id: intentId, label: intentLabel, examples: examplesArray };
-
-    console.log('New intent definition:', newIntentDef);
-    // IMPORTANT: In a real app, you would:
-    // 1. Make an API call to save the new intent definition.
-    // 2. Update the application's central store of intents (e.g., refetch or add to local state).
-    // 3. For this example, we'll just log it and maybe add it to the *local* mockIntents (won't persist).
-    // mockIntents.push(newIntentDef); // This would only update the local array for the current session
-
-    // Reset dialog state
-    setNewIntentLabel('');
-    setNewIntentId('');
-    setNewIntentExamples(['']);
-    setShowIntentDialog(false);
-  };
-
-  // --- New Action Dialog Handlers ---
-  const handleNewActionValueTypeToggle = (type: ValueInputType) => {
-    setNewActionValueType(type);
-    setNewActionValue(type === 'function' ? (mockAvailableFunctions[0]?.name || '') : '');
-  };
-
-  const handleActionDialogSubmit = () => {
-    const actionTitle = newActionTitle.trim();
-    const actionName = newActionName.trim();
-
-    if (!actionName) { // Name is mandatory
-      alert("Action Name (Identifier) is required.");
-      return;
-    }
-     if (definedActions.some(a => a.name === actionName)) { // Check against current state
-        alert(`Action Name "${actionName}" already exists.`);
-        return;
-     }
-
-    const newActionDefinition: ActionDefinition = {
-      title: actionTitle || actionName, // Default title to name if empty
-      name: actionName,
-      value: newActionValue, // Value is already managed by state
-      valueType: newActionValueType,
-    };
-
-    onAddNewActionDefinition(newActionDefinition); // Call the callback passed from FlowContent
-
-    // Reset dialog state
-    setNewActionTitle('');
-    setNewActionName('');
-    setNewActionValue('');
-    setNewActionValueType('text');
-    setShowActionDialog(false);
-  };
 
   // --- Render Logic ---
-  if (!selectedNode || (selectedNode.type !== 'intent' && selectedNode.type !== 'action')) {
-    // Optionally return a placeholder or null
-     return (
-        <div className="relative w-72 bg-white border-l border-gray-200 shadow-lg flex flex-col h-full transition-all duration-300 ease-in-out z-10">
-             <div className="p-4 border-b border-gray-200 flex justify-between items-center min-h-[60px]">
-                <h3 className="text-lg font-semibold text-gray-500">Node Details</h3>
-                 <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-                    <X size={20} />
-                 </button>
-             </div>
-             <div className="flex-grow p-4 text-center text-gray-400 text-sm">
-                 Select an Intent or Action node to configure it.
-             </div>
-        </div>
-     );
+  let NodeIcon: React.ElementType | null = null;
+  let nodeTypeName = "Node";
+  let headerColor = "text-gray-800";
+  let iconColor = "text-gray-600";
+
+  if (!selectedNode) {
+      return (
+           <div className="relative w-72 bg-white border-l border-gray-200 shadow-lg flex flex-col h-full">
+              <div className="p-4 border-b border-gray-200 flex justify-between items-center min-h-[60px] flex-shrink-0">
+                 <h3 className="text-lg font-semibold text-gray-500 flex items-center gap-2"><AlertTriangle size={18} className="text-yellow-500"/> No Selection</h3>
+                 <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
+              </div>
+              <div className="flex-grow p-4 text-center text-gray-500 text-sm">
+                  Please select a node on the canvas to see its details.
+              </div>
+           </div>
+      );
   }
 
-  const isActionNodeSelected = selectedNode.type === 'action';
-  const isIntentNodeSelected = selectedNode.type === 'intent';
+  // Determine icon and colors based on the selected node type
+  switch (selectedNode.type) {
+    case 'start':
+      NodeIcon = PlayCircle; nodeTypeName = "Start Node"; headerColor = "text-indigo-800"; iconColor = "text-indigo-600"; break;
+    case 'intent':
+      NodeIcon = Bot; nodeTypeName = "Intent Node"; headerColor = "text-blue-800"; iconColor = "text-blue-600"; break;
+    case 'action':
+      NodeIcon = Zap; nodeTypeName = "Action Node"; headerColor = "text-green-800"; iconColor = "text-green-600"; break;
+    case 'end':
+      NodeIcon = FlagOff; nodeTypeName = "End Node"; headerColor = "text-red-800"; iconColor = "text-red-600"; break;
+    default: NodeIcon = AlertTriangle; nodeTypeName = "Unknown Node"; iconColor="text-yellow-500"; // Fallback for safety
+  }
 
-  // Get current data directly from selectedNode for display in view mode
-  const nodeData = selectedNode.data || {};
-  const currentIntentDef = mockIntents.find(i => i.id === nodeData.intentId);
-  const displayIntentLabel = currentIntentDef?.label || nodeData.intentId || 'N/A';
-  const displayIntentId = nodeData.intentId || 'N/A';
-  const displayActionTitle = nodeData.title || nodeData.name || 'N/A';
-  const displayActionName = nodeData.name || 'N/A';
-  const displayActionValue = nodeData.value ?? 'N/A'; // Use nullish coalescing
-  const displayActionValueType = nodeData.valueType || 'text';
+  const isConfigurableNode = selectedNode.type === 'start' || selectedNode.type === 'intent' || selectedNode.type === 'action';
+  const nodeData = selectedNode.data || {}; // Safe access to data
 
   return (
+    // Use flex-col h-full on the root div
     <div className="relative w-72 bg-white border-l border-gray-200 shadow-lg flex flex-col h-full transition-all duration-300 ease-in-out z-10">
       {/* Header */}
-      <div className="p-4 border-b border-gray-200 flex justify-between items-center min-h-[60px]">
-        <h3 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
-           {isActionNodeSelected ? <><Zap size={18} className="text-green-600"/> Action Node</> : <><Bot size={18} className="text-blue-600"/> Intent Node</>}
+      <div className="p-4 border-b border-gray-200 flex justify-between items-center min-h-[60px] flex-shrink-0">
+        <h3 className={`text-lg font-semibold ${headerColor} flex items-center gap-2`}>
+           {NodeIcon && <NodeIcon size={18} className={iconColor}/>}
+           {nodeTypeName}
         </h3>
         <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
           <X size={20} />
         </button>
       </div>
 
-      {/* Content Area */}
-      <div className="flex-grow overflow-y-auto p-4 space-y-6 scrollbar-thin scrollbar-thumb-gray-300 hover:scrollbar-thumb-gray-400"> {/* Added scrollbar styling */}
-
-        {/* === VIEW MODE === */}
-        {mode === 'view' && (
-          <div className="space-y-3 animate-fadeIn"> {/* Added fade-in animation */}
-            <h4 className="text-md font-semibold text-gray-700 mb-2">Current Configuration</h4>
-            {isIntentNodeSelected && (
-              <>
-                <p className="text-sm"><span className="text-gray-500">Intent:</span> <span className="font-medium text-blue-700">{displayIntentLabel}</span></p>
-                <p className="text-sm"><span className="text-gray-500">ID:</span> <code className="text-xs bg-blue-100 text-blue-700 px-1 py-0.5 rounded">{displayIntentId}</code></p>
-                <div className="text-sm">
-                   <span className="text-gray-500">Examples:</span>
-                   {Array.isArray(nodeData.examples) && nodeData.examples.length > 0 ? (
-                       <ul className="list-disc list-inside pl-2 mt-1">
-                           {nodeData.examples.slice(0, 3).map((ex: string, i: number) => <li key={i} className="text-gray-600 text-xs truncate">{ex}</li>)}
-                           {nodeData.examples.length > 3 && <li className="text-gray-400 text-xs">...and {nodeData.examples.length - 3} more</li>}
-                       </ul>
-                   ) : (
-                       <span className="text-gray-400 text-xs ml-1"> (None)</span>
-                   )}
-                </div>
-              </>
-            )}
-            {isActionNodeSelected && (
-              <>
-                <p className="text-sm"><span className="text-gray-500">Title:</span> <span className="font-medium text-gray-800">{displayActionTitle}</span></p>
-                <p className="text-sm"><span className="text-gray-500">Name:</span> <span className="font-medium text-green-700">{displayActionName}</span></p>
-                <div className="text-sm flex items-start gap-2"> {/* Align items start */}
-                  <span className="text-gray-500 flex-shrink-0">{displayActionValueType === 'function' ? 'Function:' : 'Value:'}</span>
-                   {displayActionValueType === 'function' && <GitBranch size={14} className="text-gray-500 mt-0.5 flex-shrink-0" />}
-                   <code className="text-xs bg-green-100 text-green-700 px-1 py-0.5 rounded break-words max-w-full"> {/* Ensure code block can wrap */}
-                     {typeof displayActionValue === 'string' ? displayActionValue : JSON.stringify(displayActionValue)}
-                   </code>
-                </div>
-              </>
-            )}
-            {/* --- Action Buttons for View Mode --- */}
-            <div className="mt-5 pt-4 border-t border-gray-100 flex flex-col sm:flex-row gap-2">
-               <button
-                 onClick={() => handleSetMode('edit')}
-                 className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded focus:outline-none focus:ring-2 text-sm font-medium transition-colors duration-150 ${
-                    isActionNodeSelected
-                    ? 'bg-green-50 border border-green-300 text-green-700 hover:bg-green-100 focus:ring-green-500'
-                    : 'bg-blue-50 border border-blue-300 text-blue-700 hover:bg-blue-100 focus:ring-blue-500'
-                 }`}
-               >
-                 <Edit size={16} /> Edit Details
-               </button>
-               <button
-                 onClick={() => handleSetMode('change')}
-                 className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded focus:outline-none focus:ring-2 text-sm font-medium transition-colors duration-150 ${
-                    isActionNodeSelected
-                    ? 'bg-gray-50 border border-gray-300 text-gray-700 hover:bg-gray-100 focus:ring-gray-400'
-                    : 'bg-gray-50 border border-gray-300 text-gray-700 hover:bg-gray-100 focus:ring-gray-400'
-                 }`}
-                >
-                  <Replace size={16} /> {isActionNodeSelected ? 'Change Type' : 'Change Intent'}
-                </button>
-            </div>
-          </div>
-        )}
-
-        {/* === EDIT MODE === */}
-        {mode === 'edit' && (
-           <div className="space-y-4 animate-fadeIn">
-            <h4 className="text-md font-semibold text-gray-700 mb-1 flex items-center gap-2"><Edit size={16}/> Edit Details</h4>
-
-            {/* --- Edit Intent --- */}
-            {isIntentNodeSelected && (
-               <div className="space-y-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="intentIdEdit">
-                        Intent ID
-                      </label>
-                      <select
-                        id="intentIdEdit"
-                        value={currentIntentId}
-                        // Allow selection or potentially text input if needed later
-                        onChange={(e) => handleIntentIdChange(e.target.value)}
-                        className="block w-full border border-gray-300 rounded-md p-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm text-sm"
-                       >
-                         <option value="" disabled>Select Intent</option>
-                         {mockIntents.map(intent => (
-                             <option key={intent.id} value={intent.id}>
-                                 {intent.label} ({intent.id})
-                             </option>
-                         ))}
-                         {/* If currentIntentId isn't in mockIntents, show it as an option */}
-                         {!mockIntents.some(i => i.id === currentIntentId) && currentIntentId && (
-                             <option value={currentIntentId}>{currentIntentId} (Custom)</option>
-                         )}
-                      </select>
-                       {/* Display Label based on selected ID */}
-                        <p className="text-xs text-gray-500 mt-1">
-                           Label: {mockIntents.find(i => i.id === currentIntentId)?.label || '(Custom or Not Found)'}
-                        </p>
-                    </div>
-
-                    <div>
-                       <label className="block text-sm font-medium text-gray-700 mb-1">Examples</label>
-                       {currentExamples.map((example, index) => (
-                         <div key={index} className="mt-1 flex items-center gap-2">
-                           <input
-                             type="text"
-                             value={example}
-                             onChange={(e) => handleExampleChange(index, e.target.value)}
-                             className="flex-grow border border-gray-300 rounded-md p-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm text-sm"
-                             placeholder={`Example ${index + 1}`}
-                            />
-                            <button
-                                onClick={() => handleRemoveExampleInput(index)}
-                                type="button"
-                                className="text-red-500 hover:text-red-700 p-1 rounded-full hover:bg-red-100 flex-shrink-0"
-                                title="Remove example"
-                            >
-                               <X size={16} />
-                            </button>
+      {/* Content Area - flex-grow allows it to take remaining space, overflow-y enables scrolling */}
+      <div className="flex-grow overflow-y-auto p-4 space-y-6 scrollbar-thin scrollbar-thumb-gray-300 hover:scrollbar-thumb-gray-400">
+          {!isConfigurableNode ? (
+             <div className="text-center text-gray-400 text-sm pt-4">
+                 This node type ({selectedNode.type || 'Unknown'}) has no configurable options.
+             </div>
+          ) : (
+            <>
+              {/* VIEW MODE */}
+              {mode === 'view' && !isChangingDefinition && (
+                 <div className="space-y-3 animate-fadeIn">
+                    {/* --- Current Configuration Display --- */}
+                    <h4 className="text-md font-semibold text-gray-700 mb-2">Current Configuration</h4>
+                    {selectedNode.type === 'start' && ( <p className="text-sm"><span className="text-gray-500">Story Name:</span> <span className="font-medium text-indigo-700 break-words">{nodeData.storyName || '(Not Set)'}</span></p> )}
+                    {selectedNode.type === 'intent' && (
+                        <>
+                         <p className="text-sm"><span className="text-gray-500">Intent:</span> <span className="font-medium text-blue-700 break-words">{intents.find(i => i.id === nodeData.intentId)?.label || nodeData.intentId || '(Not Set)'}</span></p>
+                         <p className="text-sm"><span className="text-gray-500">ID:</span> <code className="text-xs bg-blue-100 text-blue-700 px-1 py-0.5 rounded break-all">{nodeData.intentId || 'N/A'}</code></p>
+                         <div className="text-sm">
+                           <span className="text-gray-500">Examples:</span>
+                           {Array.isArray(nodeData.examples) && nodeData.examples.length > 0 ? (
+                               <ul className="list-disc list-inside pl-2 mt-1 space-y-0.5">
+                                   {nodeData.examples.slice(0, 3).map((ex: string, i: number) => <li key={i} className="text-gray-600 text-xs truncate" title={ex}>{ex}</li>)}
+                                   {nodeData.examples.length > 3 && <li className="text-gray-400 text-xs italic">...and {nodeData.examples.length - 3} more</li>}
+                               </ul>
+                           ) : ( <span className="text-gray-400 text-xs ml-1"> (None defined for this node)</span> )}
                          </div>
-                       ))}
-                        <button
-                           onClick={handleAddExampleInput}
-                           type="button"
-                           className="mt-2 text-blue-600 hover:text-blue-800 text-sm flex items-center gap-1"
-                        >
-                           <PlusCircle size={16} /> Add Example
-                        </button>
-                    </div>
-                     {/* Save/Cancel Buttons */}
-                     <div className="flex gap-2 pt-3 border-t border-blue-100">
-                         <button onClick={handleIntentEditSave} className="flex-1 flex items-center justify-center gap-2 bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm font-medium">
-                            <Check size={16}/> Save Intent Changes
-                         </button>
-                         <button onClick={() => handleSetMode('view')} className="flex-1 flex items-center justify-center gap-2 bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 text-sm font-medium">
-                           Cancel
-                         </button>
-                     </div>
-               </div>
-            )}
-
-            {/* --- Edit Action --- */}
-            {isActionNodeSelected && (
-                <div className="space-y-4 p-3 bg-green-50 border border-green-200 rounded-md">
-                     <div>
-                       <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="actionConfigTitle">
-                         Title
-                       </label>
-                       <input
-                         id="actionConfigTitle"
-                         type="text"
-                         value={currentActionConfig.title || ''}
-                         onChange={(e) => handleActionConfigChange('title', e.target.value)}
-                         className="block w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm"
-                         placeholder="User-friendly title"
-                       />
-                     </div>
-                     <div>
-                       <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="actionConfigName">
-                         Name (Identifier) <span className="text-red-500">*</span>
-                       </label>
-                       <input
-                         id="actionConfigName"
-                         type="text"
-                         value={currentActionConfig.name || ''}
-                         onChange={(e) => handleActionConfigChange('name', e.target.value)}
-                         required // Basic HTML validation
-                         className="block w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm"
-                         placeholder="Code-friendly name (e.g., SendEmail)"
-                       />
-                     </div>
-                     <div>
-                       <label className="block text-sm font-medium text-gray-700 mb-1">Value Type</label>
-                       <div className="flex gap-2">
-                          <button
-                            onClick={() => handleValueTypeToggle('text')}
-                            className={`flex items-center gap-1 px-3 py-1 rounded border text-sm transition-colors ${currentValueInputType === 'text' ? 'bg-green-100 border-green-300 text-green-800 font-medium' : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'}`}
-                          >
-                            <Type size={14} /> Text
-                          </button>
-                          <button
-                            onClick={() => handleValueTypeToggle('function')}
-                            className={`flex items-center gap-1 px-3 py-1 rounded border text-sm transition-colors ${currentValueInputType === 'function' ? 'bg-green-100 border-green-300 text-green-800 font-medium' : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'}`}
-                          >
-                            <GitBranch size={14} /> Function
-                          </button>
-                       </div>
-                     </div>
-
-                     {/* Conditional Value Input */}
-                     {currentValueInputType === 'text' ? (
-                       <div>
-                         <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="actionConfigValueText">
-                           Text Value
-                         </label>
-                         <textarea
-                           id="actionConfigValueText"
-                           value={currentActionConfig.value || ''}
-                           onChange={(e) => handleActionConfigChange('value', e.target.value)}
-                           className="block w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm font-mono"
-                           placeholder="Enter text content, JSON, URL, etc."
-                           rows={4}
-                         />
-                       </div>
-                     ) : (
-                       <div>
-                         <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="actionConfigValueFunction">
-                           Select Function
-                         </label>
-                         <select
-                           id="actionConfigValueFunction"
-                           value={currentActionConfig.value || ''}
-                           onChange={(e) => handleActionConfigChange('value', e.target.value)}
-                           className="block w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm"
-                         >
-                           <option value="" disabled>Select available function</option>
-                           {mockAvailableFunctions.length === 0 && <option disabled>No functions available</option>}
-                           {mockAvailableFunctions.map(func => (
-                             <option key={func.name} value={func.name} title={func.description}>
-                               {func.name}
-                             </option>
-                           ))}
-                         </select>
-                         <p className="text-xs text-gray-500 mt-1 h-4"> {/* Reserve space for description */}
-                           {mockAvailableFunctions.find(f => f.name === currentActionConfig.value)?.description}
-                         </p>
-                       </div>
+                        </>
                      )}
-                     {/* Save/Cancel Buttons */}
-                     <div className="flex gap-2 pt-3 border-t border-green-100">
-                         <button onClick={handleActionEditSave} className="flex-1 flex items-center justify-center gap-2 bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 text-sm font-medium">
-                             <Check size={16}/> Save Action Changes
-                         </button>
-                         <button onClick={() => handleSetMode('view')} className="flex-1 flex items-center justify-center gap-2 bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 text-sm font-medium">
-                            Cancel
-                         </button>
-                     </div>
-                </div>
-            )}
-           </div>
-        )}
+                    {selectedNode.type === 'action' && (
+                        <>
+                         <p className="text-sm"><span className="text-gray-500">Title:</span> <span className="font-medium text-gray-800 break-words">{nodeData.title || nodeData.name || '(Not Set)'}</span></p>
+                         <p className="text-sm"><span className="text-gray-500">Name:</span> <span className="font-medium text-green-700 break-words">{nodeData.name || '(Not Set)'}</span></p>
+                         <div className="text-sm flex items-start gap-2">
+                           <span className="text-gray-500 flex-shrink-0">{nodeData.valueType === 'function' ? 'Function:' : 'Value:'}</span>
+                           {nodeData.valueType === 'function' && <GitBranch size={14} className="text-gray-500 mt-0.5 flex-shrink-0" title="Function Call"/>}
+                           <code className="text-xs bg-green-100 text-green-700 px-1 py-0.5 rounded break-words max-w-full flex-grow">
+                               {typeof nodeData.value === 'string' ? (nodeData.value || '(empty)') : JSON.stringify(nodeData.value)}
+                           </code>
+                         </div>
+                        </>
+                     )}
 
-        {/* === CHANGE MODE === */}
-        {mode === 'change' && (
-          <div className="space-y-4 animate-fadeIn">
-             <h4 className="text-md font-semibold text-gray-700 mb-3 flex items-center gap-2"><Replace size={16}/> Change {isIntentNodeSelected ? 'Intent' : 'Action Type'}</h4>
-
-             {/* --- Change Intent Selection --- */}
-            {isIntentNodeSelected && (
-              <div className="space-y-3">
-                <p className="text-xs text-gray-500">Select an intent to assign to this node.</p>
-                <div className="border rounded max-h-80 overflow-y-auto scrollbar-thin">
-                  <ul className="divide-y divide-gray-100">
-                    {mockIntents.map((intent) => (
-                      <li key={intent.id}>
-                        <button
-                          onClick={() => handleIntentSelect(intent.id)}
-                          className={`w-full text-left px-3 py-2 text-sm transition-colors duration-100 flex justify-between items-center ${
-                            nodeData.intentId === intent.id // Highlight the currently assigned one
-                              ? 'bg-blue-100 text-blue-800 font-medium'
-                              : 'text-gray-700 hover:bg-blue-50'
+                   {/* --- Action Buttons (Edit, Change Intent/Action) --- */}
+                   <div className="mt-5 pt-4 border-t border-gray-100 space-y-2">
+                      <button
+                          onClick={() => handleSetMode('edit')}
+                          className={`w-full flex items-center justify-center gap-2 px-4 py-2 rounded focus:outline-none focus:ring-2 text-sm font-medium transition-colors duration-150 border ${
+                              selectedNode.type === 'start' ? 'bg-indigo-50 border-indigo-300 text-indigo-700 hover:bg-indigo-100 focus:ring-indigo-500' :
+                              selectedNode.type === 'intent' ? 'bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100 focus:ring-blue-500' :
+                              'bg-green-50 border-green-300 text-green-700 hover:bg-green-100 focus:ring-green-500'
                           }`}
-                          title={intent.label}
-                        >
-                          <span>{intent.label}</span>
-                          <code className="text-xs text-blue-600 bg-blue-200 px-1 rounded">{intent.id}</code>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-            )}
+                      > <Edit size={16} /> Edit Details </button>
 
-            {/* --- Change Action Type Selection --- */}
-            {isActionNodeSelected && (
-               <div className="space-y-3">
-                  <p className="text-xs text-gray-500">Select a predefined action type to replace the current node's configuration.</p>
-                  <div className="border rounded max-h-80 overflow-y-auto scrollbar-thin">
-                      <ul className="divide-y divide-gray-100">
-                        {definedActions.map((action, index) => ( // Use definedActions from props
-                          <li key={`${action.name}-${index}`}>
+                      {(selectedNode.type === 'intent' || selectedNode.type === 'action') && (
+                         <button
+                           onClick={() => setIsChangingDefinition(true)} // Enter change mode
+                           className="w-full flex items-center justify-center gap-2 bg-gray-50 border border-gray-300 text-gray-700 px-4 py-2 rounded hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-400 text-sm font-medium"
+                          > <Replace size={16} /> {selectedNode.type === 'intent' ? 'Change Intent' : 'Change Action'} </button>
+                      )}
+                   </div>
+
+                   {/* --- Footer Buttons (Define New) --- */}
+                   <div className="mt-auto pt-3 border-t border-gray-200">
+                       {selectedNode.type === 'intent' && (
+                         <button onClick={() => setShowIntentDialog(true)} className="w-full flex items-center justify-center gap-1.5 bg-blue-50 border border-blue-300 text-blue-700 px-3 py-2 rounded hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm transition-colors duration-150"> <PlusCircle size={16} /> Define New Intent </button>
+                       )}
+                       {selectedNode.type === 'action' && (
+                         <button onClick={() => setShowActionDialog(true)} className="w-full flex items-center justify-center gap-1.5 bg-green-50 border border-green-300 text-green-700 px-3 py-2 rounded hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-green-500 text-sm transition-colors duration-150"> <PlusCircle size={16} /> Define New Action </button>
+                       )}
+                   </div>
+                 </div>
+              )}
+
+              {/* VIEW MODE - CHANGE DEFINITION */}
+              {mode === 'view' && isChangingDefinition && (
+                  <div className="space-y-3 animate-fadeIn">
+                      <div className="flex justify-between items-center mb-2">
+                           <h4 className="text-md font-semibold text-gray-700">
+                                Select New {selectedNode.type === 'intent' ? 'Intent' : 'Action'}
+                           </h4>
                             <button
-                              onClick={() => handleDefinedActionSelect(action)}
-                              className={`w-full text-left px-3 py-2 text-sm transition-colors duration-100 flex justify-between items-center ${
-                                  nodeData.name === action.name // Basic highlight if name matches
-                                  ? 'bg-green-100 text-green-800 font-medium'
-                                  : 'text-gray-700 hover:bg-green-50'
-                              }`}
-                              title={`${action.name} - ${action.valueType}: ${action.value}`}
+                                onClick={() => { setIsChangingDefinition(false); setSearchTerm(''); }}
+                                className="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1"
+                                title="Cancel Change"
                             >
-                              <span className="flex items-center gap-2">
-                                {action.valueType === 'function' && <GitBranch size={14} className="text-gray-400"/>}
-                                {action.title || action.name}
-                              </span>
-                              <code className="text-xs text-green-600 bg-green-200 px-1 rounded">{action.name}</code>
+                                <ChevronLeft size={16} /> Cancel
                             </button>
-                          </li>
-                        ))}
-                      </ul>
-                  </div>
-               </div>
-            )}
+                      </div>
 
-            {/* Cancel Button for Change Mode */}
-            <button
-                onClick={() => handleSetMode('view')}
-                className="mt-4 w-full flex items-center justify-center gap-2 bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 text-sm font-medium"
-              >
-                 Cancel Change
-            </button>
-          </div>
-        )}
+                      {/* Search Input */}
+                      <div className="relative">
+                          <input
+                              type="text"
+                              placeholder={`Search ${selectedNode.type === 'intent' ? 'intents' : 'actions'}...`}
+                              value={searchTerm}
+                              onChange={(e) => setSearchTerm(e.target.value)}
+                              className="w-full border border-gray-300 rounded-md p-2 pl-8 text-sm focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 shadow-sm"
+                          />
+                          <Search size={16} className="absolute left-2.5 top-1/2 transform -translate-y-1/2 text-gray-400" />
+                      </div>
+
+                      {/* List of Definitions */}
+                      <div className="space-y-1 max-h-80 overflow-y-auto border rounded-md p-1 bg-gray-50 scrollbar-thin">
+                          {selectedNode.type === 'intent' && (
+                              filteredIntents.length > 0 ? filteredIntents.map(intent => (
+                                  <button
+                                      key={intent.id}
+                                      onClick={() => handleChangeIntentClick(intent.id)}
+                                      disabled={nodeData.intentId === intent.id} // Disable selecting the current one
+                                      className={`w-full text-left px-3 py-1.5 rounded text-sm flex justify-between items-center transition-colors duration-100 ${
+                                          nodeData.intentId === intent.id
+                                              ? 'bg-blue-100 text-blue-800 font-medium cursor-not-allowed'
+                                              : 'hover:bg-blue-100 text-gray-700 hover:text-blue-800'
+                                      }`}
+                                      title={intent.id}
+                                  >
+                                      <span>{intent.label}</span>
+                                      <code className="text-xs text-gray-500">{intent.id}</code>
+                                  </button>
+                              )) : <p className="text-center text-xs text-gray-400 py-4">No matching intents found.</p>
+                          )}
+
+                          {selectedNode.type === 'action' && (
+                              filteredActions.length > 0 ? filteredActions.map(action => (
+                                  <button
+                                      key={action.name}
+                                      onClick={() => handleChangeActionClick(action.name)}
+                                      disabled={nodeData.name === action.name} // Disable selecting the current one
+                                      className={`w-full text-left px-3 py-1.5 rounded text-sm flex justify-between items-center transition-colors duration-100 ${
+                                        nodeData.name === action.name
+                                            ? 'bg-green-100 text-green-800 font-medium cursor-not-allowed'
+                                            : 'hover:bg-green-100 text-gray-700 hover:text-green-800'
+                                        }`}
+                                      title={action.name}
+                                  >
+                                      <span className="truncate">{action.title || action.name}</span>
+                                      {action.valueType === 'function' && <GitBranch size={14} className="text-gray-500 ml-2 flex-shrink-0" title="Function"/>}
+                                  </button>
+                              )) : <p className="text-center text-xs text-gray-400 py-4">No matching actions found.</p>
+                          )}
+                      </div>
+                  </div>
+              )}
+
+
+              {/* EDIT MODE */}
+              {mode === 'edit' && (
+                 <div className="space-y-4 animate-fadeIn">
+                   <h4 className="text-md font-semibold text-gray-700 mb-1 flex items-center gap-2"><Edit size={16}/> Edit Details</h4>
+
+                   {/* --- Edit Start Node --- */}
+                   {selectedNode.type === 'start' && (
+                       <div className="space-y-4 p-3 bg-indigo-50 border border-indigo-200 rounded-md">
+                           <div>
+                             <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="storyNameEdit"> Story Name </label>
+                             <input id="storyNameEdit" type="text" value={currentStoryName} onChange={(e) => handleStoryNameChange(e.target.value)} className="block w-full border border-gray-300 rounded-md p-2 focus:ring-indigo-500 focus:border-indigo-500 shadow-sm text-sm" placeholder="Enter a name for this story" />
+                           </div>
+                           <div className="flex gap-2 pt-3 border-t border-indigo-100">
+                               <button onClick={handleStartNodeEditSave} className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-medium"> <Check size={16}/> Save Changes </button>
+                               <button onClick={() => handleSetMode('view')} className="flex-1 flex items-center justify-center gap-2 bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 text-sm font-medium"> Cancel </button>
+                           </div>
+                       </div>
+                   )}
+
+                   {/* --- Edit Intent Node --- */}
+                   {selectedNode.type === 'intent' && (
+                      <div className="space-y-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="intentIdEdit"> Intent <span className="text-red-500">*</span></label>
+                             <select id="intentIdEdit" value={currentIntentId} onChange={(e) => handleIntentIdEditChange(e.target.value)} required className="block w-full border border-gray-300 rounded-md p-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm text-sm" >
+                               <option value="" disabled>Select Intent</option>
+                               {intents.map(intent => (<option key={intent.id} value={intent.id}>{intent.label} ({intent.id})</option>))}
+                               {!intents.some(i => i.id === currentIntentId) && currentIntentId && (<option value={currentIntentId}>{currentIntentId} (Current/Unknown)</option>)}
+                            </select>
+                             <p className="text-xs text-gray-500 mt-1"> Label: {intents.find(i => i.id === currentIntentId)?.label || '(Custom/Not Found)'} </p>
+                          </div>
+                          <div>
+                             <label className="block text-sm font-medium text-gray-700 mb-1">Examples <span className="text-gray-400 text-xs">(for this node & definition)</span></label>
+                             {currentExamples.map((example, index) => (
+                               <div key={index} className="mt-1 flex items-center gap-2">
+                                 <input type="text" value={example} onChange={(e) => handleExampleChange(index, e.target.value)} className="flex-grow border border-gray-300 rounded-md p-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm text-sm" placeholder={`Example ${index + 1}`} />
+                                  <button onClick={() => handleRemoveExampleInput(index)} type="button" className={`p-1 text-red-500 hover:text-red-700 rounded-full hover:bg-red-100 flex-shrink-0 ${currentExamples.length <= 0 ? 'invisible' : ''}`} title="Remove example"> <X size={16} /> </button>
+                               </div>
+                             ))}
+                             {currentExamples.length === 0 && <p className="text-xs text-gray-400 italic mt-1">No examples defined yet.</p>}
+                              <button onClick={handleAddExampleInput} type="button" className="mt-2 text-blue-600 hover:text-blue-800 text-sm flex items-center gap-1"> <PlusCircle size={16} /> Add Example </button>
+                          </div>
+                          <div className="flex gap-2 pt-3 border-t border-blue-100">
+                              <button onClick={handleIntentEditSave} className="flex-1 flex items-center justify-center gap-2 bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm font-medium"> <Check size={16}/> Save Intent Changes </button>
+                              <button onClick={() => handleSetMode('view')} className="flex-1 flex items-center justify-center gap-2 bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 text-sm font-medium"> Cancel </button>
+                          </div>
+                      </div>
+                   )}
+
+                   {/* --- Edit Action Node --- */}
+                   {selectedNode.type === 'action' && (
+                      <div className="space-y-4 p-3 bg-green-50 border border-green-200 rounded-md">
+                            <div>
+                             <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="actionConfigTitle"> Title </label>
+                             <input id="actionConfigTitle" type="text" value={currentActionConfig.title || ''} onChange={(e) => handleActionConfigChange('title', e.target.value)} className="block w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm" placeholder="User-friendly title (optional)" />
+                           </div>
+                           <div>
+                             <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="actionConfigName"> Name (Identifier) <span className="text-red-500">*</span> </label>
+                             <input id="actionConfigName" type="text" value={currentActionConfig.name || ''} onChange={(e) => handleActionConfigChange('name', e.target.value)} required className="block w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm font-mono" placeholder="e.g., action_ask_name (no spaces)" />
+                           </div>
+                           <div>
+                             <label className="block text-sm font-medium text-gray-700 mb-1">Value Type</label>
+                             <div className="flex gap-2">
+                                <button onClick={() => handleValueTypeToggle('text')} className={`flex items-center gap-1 px-3 py-1 rounded border text-sm transition-colors ${currentValueInputType === 'text' ? 'bg-green-100 border-green-300 text-green-800 font-medium' : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'}`}> <Type size={14} /> Text </button>
+                                <button onClick={() => handleValueTypeToggle('function')} className={`flex items-center gap-1 px-3 py-1 rounded border text-sm transition-colors ${currentValueInputType === 'function' ? 'bg-green-100 border-green-300 text-green-800 font-medium' : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'}`}> <GitBranch size={14} /> Function </button>
+                             </div>
+                           </div>
+                            {/* Conditional Value Input */}
+                           {currentValueInputType === 'text' ? (
+                             <div>
+                               <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="actionConfigValueText"> Text Value </label>
+                               <textarea id="actionConfigValueText" value={currentActionConfig.value || ''} onChange={(e) => handleActionConfigChange('value', e.target.value)} className="block w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm font-mono" placeholder="Enter text, JSON, URL, etc." rows={4} />
+                             </div>
+                           ) : (
+                             <div>
+                               <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="actionConfigValueFunction"> Select Function </label>
+                               <select id="actionConfigValueFunction" value={currentActionConfig.value || ''} onChange={(e) => handleActionConfigChange('value', e.target.value)} className="block w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm" >
+                                 <option value="" disabled>Select available function</option>
+                                 {mockAvailableFunctions.length === 0 && <option disabled>No functions available</option>}
+                                 {mockAvailableFunctions.map(func => (<option key={func.name} value={func.name} title={func.description}>{func.name}</option>))}
+                                  {/* Show current value if it's not in the list */}
+                                  {currentActionConfig.value && !mockAvailableFunctions.some(f => f.name === currentActionConfig.value) && (
+                                    <option value={currentActionConfig.value}>{currentActionConfig.value} (Current/Unknown)</option>
+                                  )}
+                               </select>
+                               <p className="text-xs text-gray-500 mt-1 h-4 truncate"> {mockAvailableFunctions.find(f => f.name === currentActionConfig.value)?.description} </p>
+                             </div>
+                           )}
+                           <div className="flex gap-2 pt-3 border-t border-green-100">
+                               <button onClick={handleActionEditSave} className="flex-1 flex items-center justify-center gap-2 bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 text-sm font-medium"> <Check size={16}/> Save Action Changes </button>
+                               <button onClick={() => handleSetMode('view')} className="flex-1 flex items-center justify-center gap-2 bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 text-sm font-medium"> Cancel </button>
+                           </div>
+                      </div>
+                   )}
+                 </div>
+              )}
+            </>
+          )}
       </div> {/* End Content Area */}
 
 
-      {/* --- Footer Buttons for Defining New Types --- */}
-       {/* Show these buttons only in 'view' or 'change' modes for less clutter during edits */}
-      {(mode === 'view' || mode === 'change') && (
-          <div className="p-3 border-t border-gray-200 mt-auto">
-            {isIntentNodeSelected && (
-              <button
-                onClick={() => setShowIntentDialog(true)}
-                className="w-full flex items-center justify-center gap-1.5 bg-blue-50 border border-blue-300 text-blue-700 px-3 py-2 rounded hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm transition-colors duration-150"
-              >
-                <PlusCircle size={16} /> Define New Intent
-              </button>
-            )}
-            {isActionNodeSelected && (
-              <button
-                onClick={() => setShowActionDialog(true)}
-                className="w-full flex items-center justify-center gap-1.5 bg-green-50 border border-green-300 text-green-700 px-3 py-2 rounded hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-green-500 text-sm transition-colors duration-150"
-              >
-                <PlusCircle size={16} /> Define New Action
-              </button>
-            )}
-          </div>
-      )}
-
-
       {/* --- DIALOGS --- */}
-      {/* Dialog Modal for Defining New Intent */}
+      {/* Intent Dialog */}
       {showIntentDialog && (
-        <div className="fixed inset-0 bg-black bg-opacity-40 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fadeIn">
-          <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-lg relative max-h-[90vh] flex flex-col">
-            <button onClick={() => setShowIntentDialog(false)} className="absolute top-3 right-3 text-gray-400 hover:text-gray-600" title="Close"><X size={20} /></button>
-            <h4 className="text-xl font-semibold mb-5 text-gray-800 flex items-center gap-2"><Bot size={20} className="text-blue-600"/> Define New Intent</h4>
-            <div className="flex-grow overflow-y-auto pr-2 -mr-2 space-y-4 scrollbar-thin">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="intentLabel">Intent Label <span className="text-red-500">*</span></label>
-                <input id="intentLabel" type="text" value={newIntentLabel} onChange={(e) => setNewIntentLabel(e.target.value)} className="block w-full border border-gray-300 rounded-md p-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm text-sm" placeholder="User-friendly label (e.g., Order Pizza)" />
+         <div className="fixed inset-0 bg-black bg-opacity-40 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fadeIn">
+           <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-lg relative max-h-[90vh] flex flex-col">
+              {/* Header */}
+              <div className="flex justify-between items-center border-b pb-3 mb-4 flex-shrink-0">
+                  <h4 className="text-lg font-semibold text-blue-800 flex items-center gap-2"><PlusCircle size={18} /> Define New Intent</h4>
+                  <button onClick={() => setShowIntentDialog(false)} className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="intentId">Intent ID <span className="text-red-500">*</span></label>
-                <input id="intentId" type="text" value={newIntentId} onChange={(e) => setNewIntentId(e.target.value)} className="block w-full border border-gray-300 rounded-md p-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm text-sm font-mono" placeholder="Code-friendly ID (e.g., intent_order_pizza)" />
-                 <p className="text-xs text-gray-500 mt-1">Must be unique. Use underscores, no spaces.</p>
+              {/* Form - Allow scroll */}
+              <div className="space-y-4 overflow-y-auto pr-2 flex-grow scrollbar-thin scrollbar-thumb-gray-300 hover:scrollbar-thumb-gray-400">
+                   {/* ... Intent Dialog form fields ... */}
+                   <div>
+                     <label htmlFor="newIntentLabel" className="block text-sm font-medium text-gray-700 mb-1">Label <span className="text-red-500">*</span></label>
+                     <input type="text" id="newIntentLabel" value={newIntentLabel} onChange={e => setNewIntentLabel(e.target.value)} required className="w-full border border-gray-300 rounded-md p-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm text-sm" placeholder="User-friendly label (e.g., Greet User)" />
+                   </div>
+                   <div>
+                     <label htmlFor="newIntentId" className="block text-sm font-medium text-gray-700 mb-1">ID <span className="text-red-500">*</span></label>
+                     <input type="text" id="newIntentId" value={newIntentId} onChange={e => setNewIntentId(e.target.value)} required className="w-full border border-gray-300 rounded-md p-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm text-sm font-mono" placeholder="Code-friendly ID (e.g., intent_greet)" />
+                      <p className="text-xs text-gray-500 mt-1">Use lowercase letters, numbers, and underscores. Will be sanitized on save.</p>
+                   </div>
+                   <div>
+                     <label className="block text-sm font-medium text-gray-700 mb-1">Examples</label>
+                     {newIntentExamples.map((example, index) => (
+                        <div key={index} className="mt-1 flex items-center gap-2">
+                           <input type="text" value={example} onChange={e => handleNewIntentExampleChange(index, e.target.value)} className="flex-grow border border-gray-300 rounded-md p-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm text-sm" placeholder={`Example ${index + 1}`}/>
+                           <button onClick={() => handleRemoveNewIntentExample(index)} type="button" className={`p-1 text-red-500 hover:text-red-700 rounded-full hover:bg-red-100 flex-shrink-0 ${newIntentExamples.length <= 1 ? 'invisible' : ''}`} title="Remove example"><X size={16} /></button>
+                        </div>
+                      ))}
+                       <button onClick={handleAddIntentExampleInput} type="button" className="mt-2 text-blue-600 hover:text-blue-800 text-sm flex items-center gap-1"><PlusCircle size={16} /> Add Example</button>
+                   </div>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Example User Inputs</label>
-                {newIntentExamples.map((example, index) => (
-                  <div key={index} className="mt-2 flex items-center gap-2">
-                    <input type="text" value={example} onChange={(e) => handleNewIntentExampleChange(index, e.target.value)} className="flex-grow border border-gray-300 rounded-md p-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm text-sm" placeholder={`Example ${index + 1} (e.g., "I want a pizza")`} />
-                    <button onClick={handleAddIntentExampleInput} type="button" className={`p-1 text-blue-600 hover:text-blue-800 rounded-full hover:bg-blue-100 ${index !== newIntentExamples.length - 1 ? 'invisible' : ''}`} title="Add another example"><PlusCircle size={20} /></button>
-                    <button onClick={() => handleRemoveNewIntentExample(index)} type="button" className={`p-1 text-red-500 hover:text-red-700 rounded-full hover:bg-red-100 ${newIntentExamples.length <= 1 ? 'invisible' : ''}`} title="Remove example"><X size={18} /></button>
-                  </div>
-                ))}
-                <p className="text-xs text-gray-500 mt-1">Provide examples of how a user might express this intent.</p>
+              {/* Footer */}
+              <div className="flex justify-end gap-3 border-t pt-4 mt-4 flex-shrink-0">
+                  <button onClick={() => setShowIntentDialog(false)} className="bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 text-sm font-medium">Cancel</button>
+                  <button onClick={handleIntentDialogSubmit} className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm font-medium flex items-center gap-1.5"><Check size={16}/> Create Intent</button>
               </div>
-            </div>
-            <div className="flex justify-end gap-2 pt-4 border-t border-gray-200 mt-4 flex-shrink-0">
-              <button onClick={() => setShowIntentDialog(false)} className="px-4 py-2 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md font-medium">Cancel</button>
-              <button onClick={handleIntentDialogSubmit} className="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-md font-medium flex items-center gap-1"><PlusCircle size={16}/> Create Intent Definition</button>
-            </div>
-          </div>
-        </div>
+           </div>
+         </div>
       )}
 
-      {/* Dialog Modal for Defining New Action */}
-      {showActionDialog && (
-        <div className="fixed inset-0 bg-black bg-opacity-40 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fadeIn">
-          <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-lg relative max-h-[90vh] flex flex-col">
-            <button onClick={() => setShowActionDialog(false)} className="absolute top-3 right-3 text-gray-400 hover:text-gray-600" title="Close"><X size={20} /></button>
-            <h4 className="text-xl font-semibold mb-5 text-gray-800 flex items-center gap-2"><Zap size={20} className="text-green-600"/> Define New Action</h4>
-            <div className="flex-grow overflow-y-auto pr-2 -mr-2 space-y-4 scrollbar-thin">
-              {/* Title Input */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="newActionTitle">Title</label>
-                <input id="newActionTitle" type="text" value={newActionTitle} onChange={(e) => setNewActionTitle(e.target.value)} className="block w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm" placeholder="User-friendly title (e.g., Send Confirmation)" />
-                <p className="text-xs text-gray-500 mt-1">A short, descriptive title (optional, defaults to Name).</p>
+      {/* Action Dialog */}
+       {showActionDialog && (
+         <div className="fixed inset-0 bg-black bg-opacity-40 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fadeIn">
+            <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-lg relative max-h-[90vh] flex flex-col">
+                {/* Header */}
+              <div className="flex justify-between items-center border-b pb-3 mb-4 flex-shrink-0">
+                  <h4 className="text-lg font-semibold text-green-800 flex items-center gap-2"><PlusCircle size={18} /> Define New Action</h4>
+                  <button onClick={() => setShowActionDialog(false)} className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
               </div>
-              {/* Name Input */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="newActionName">Name (Identifier) <span className="text-red-500">*</span></label>
-                <input id="newActionName" type="text" value={newActionName} onChange={(e) => setNewActionName(e.target.value)} required className="block w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm font-mono" placeholder="Code-friendly name (e.g., SendEmail)" />
-                <p className="text-xs text-gray-500 mt-1">Unique identifier for the action. Use underscores, no spaces.</p>
-              </div>
-              {/* Value Type Toggle */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Value Type</label>
-                 <div className="flex gap-2">
-                   <button onClick={() => handleNewActionValueTypeToggle('text')} className={`flex items-center gap-1 px-3 py-1 rounded border text-sm transition-colors ${newActionValueType === 'text' ? 'bg-green-100 border-green-300 text-green-800 font-medium' : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'}`}><Type size={14} /> Text</button>
-                   <button onClick={() => handleNewActionValueTypeToggle('function')} className={`flex items-center gap-1 px-3 py-1 rounded border text-sm transition-colors ${newActionValueType === 'function' ? 'bg-green-100 border-green-300 text-green-800 font-medium' : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'}`}><GitBranch size={14} /> Function</button>
-                 </div>
-              </div>
-              {/* Conditional Value Input for Dialog */}
-              {newActionValueType === 'text' ? (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="newActionValueText">Text Value</label>
-                  <textarea id="newActionValueText" value={newActionValue} onChange={(e) => setNewActionValue(e.target.value)} className="block w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm font-mono" placeholder="Enter text, JSON, URL, etc." rows={4} />
-                  <p className="text-xs text-gray-500 mt-1">The static value or configuration for this action.</p>
+              {/* Form - Allow scroll */}
+               <div className="space-y-4 overflow-y-auto pr-2 flex-grow scrollbar-thin scrollbar-thumb-gray-300 hover:scrollbar-thumb-gray-400">
+                    {/* ... Action Dialog form fields ... */}
+                   <div>
+                     <label htmlFor="newActionTitle" className="block text-sm font-medium text-gray-700 mb-1">Title</label>
+                     <input type="text" id="newActionTitle" value={newActionTitle} onChange={e => setNewActionTitle(e.target.value)} className="w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm" placeholder="User-friendly title (optional)" />
+                   </div>
+                   <div>
+                     <label htmlFor="newActionName" className="block text-sm font-medium text-gray-700 mb-1">Name (Identifier) <span className="text-red-500">*</span></label>
+                     <input type="text" id="newActionName" value={newActionName} onChange={e => setNewActionName(e.target.value)} required className="w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm font-mono" placeholder="e.g., action_send_message" />
+                     <p className="text-xs text-gray-500 mt-1">Use lowercase letters, numbers, and underscores. Will be sanitized on save.</p>
+                   </div>
+                   <div>
+                     <label className="block text-sm font-medium text-gray-700 mb-1">Value Type</label>
+                     <div className="flex gap-2">
+                         <button onClick={() => handleNewActionValueTypeToggle('text')} className={`flex items-center gap-1 px-3 py-1 rounded border text-sm transition-colors ${newActionValueType === 'text' ? 'bg-green-100 border-green-300 text-green-800 font-medium' : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'}`}><Type size={14} /> Text</button>
+                         <button onClick={() => handleNewActionValueTypeToggle('function')} className={`flex items-center gap-1 px-3 py-1 rounded border text-sm transition-colors ${newActionValueType === 'function' ? 'bg-green-100 border-green-300 text-green-800 font-medium' : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'}`}><GitBranch size={14} /> Function</button>
+                     </div>
+                   </div>
+                   {newActionValueType === 'text' ? (
+                     <div>
+                        <label htmlFor="newActionValueText" className="block text-sm font-medium text-gray-700 mb-1">Text Value</label>
+                        <textarea id="newActionValueText" value={newActionValue} onChange={e => setNewActionValue(e.target.value)} className="w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm font-mono" placeholder="Enter text, JSON, URL, etc." rows={4} />
+                     </div>
+                   ) : (
+                     <div>
+                        <label htmlFor="newActionValueFunc" className="block text-sm font-medium text-gray-700 mb-1">Select Function</label>
+                        <select id="newActionValueFunc" value={newActionValue} onChange={e => setNewActionValue(e.target.value)} className="w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm">
+                           <option value="" disabled>Select available function</option>
+                           {mockAvailableFunctions.length === 0 && <option disabled>No functions available</option>}
+                           {mockAvailableFunctions.map(func => (<option key={func.name} value={func.name} title={func.description}>{func.name}</option>))}
+                        </select>
+                        <p className="text-xs text-gray-500 mt-1 h-4 truncate">{mockAvailableFunctions.find(f => f.name === newActionValue)?.description}</p>
+                     </div>
+                   )}
                 </div>
-              ) : (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="newActionValueFunction">Select Function</label>
-                  <select id="newActionValueFunction" value={newActionValue} onChange={(e) => setNewActionValue(e.target.value)} className="block w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm">
-                    <option value="" disabled>Select available function</option>
-                    {mockAvailableFunctions.length === 0 && <option value="" disabled>No functions available</option>}
-                    {mockAvailableFunctions.map(func => (<option key={func.name} value={func.name} title={func.description}>{func.name}</option>))}
-                  </select>
-                   <p className="text-xs text-gray-500 mt-1 h-4">
-                      {mockAvailableFunctions.find(f => f.name === newActionValue)?.description}
-                   </p>
-                </div>
-              )}
+              {/* Footer */}
+              <div className="flex justify-end gap-3 border-t pt-4 mt-4 flex-shrink-0">
+                  <button onClick={() => setShowActionDialog(false)} className="bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 text-sm font-medium">Cancel</button>
+                  <button onClick={handleActionDialogSubmit} className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 text-sm font-medium flex items-center gap-1.5"><Check size={16}/> Create Action</button>
+              </div>
             </div>
-            {/* Dialog Footer */}
-            <div className="flex justify-end gap-2 pt-4 border-t border-gray-200 mt-4 flex-shrink-0">
-              <button onClick={() => setShowActionDialog(false)} className="px-4 py-2 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md font-medium">Cancel</button>
-              <button onClick={handleActionDialogSubmit} className="px-4 py-2 text-sm text-white bg-green-600 hover:bg-green-700 rounded-md font-medium flex items-center gap-1"><PlusCircle size={16}/> Create Action Definition</button>
-            </div>
-          </div>
-        </div>
+         </div>
       )}
 
-      {/* Add simple fade-in animation style */}
+      {/* Global Styles */}
       <style jsx global>{`
-         @keyframes fadeIn {
-           from { opacity: 0; }
-           to { opacity: 1; }
-         }
-         .animate-fadeIn {
-           animation: fadeIn 0.3s ease-out;
-         }
-        /* Basic scrollbar styling */
-        .scrollbar-thin {
-            scrollbar-width: thin; /* For Firefox */
-            scrollbar-color: #a0aec0 #e2e8f0; /* thumb track */
-        }
-        .scrollbar-thin::-webkit-scrollbar {
-            width: 6px;
-        }
-        .scrollbar-thin::-webkit-scrollbar-track {
-            background: #e2e8f0; /* Use Tailwind gray-200 */
-            border-radius: 3px;
-        }
-        .scrollbar-thin::-webkit-scrollbar-thumb {
-            background-color: #a0aec0; /* Use Tailwind gray-400 */
-            border-radius: 3px;
-            border: 1px solid #e2e8f0; /* Optional: Match track color */
-        }
-        .hover\\:scrollbar-thumb-gray-400:hover::-webkit-scrollbar-thumb {
-            background-color: #718096; /* Use Tailwind gray-500 */
-        }
+         @keyframes fadeIn { from { opacity: 0; transform: scale(0.98); } to { opacity: 1; transform: scale(1); } }
+         .animate-fadeIn { animation: fadeIn 0.2s ease-out; }
+         /* Basic scrollbar styling */
+         .scrollbar-thin { scrollbar-width: thin; scrollbar-color: #CBD5E0 #EDF2F7; /* thumb track */ }
+         .scrollbar-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+         .scrollbar-thin::-webkit-scrollbar-track { background: #EDF2F7; border-radius: 4px; }
+         .scrollbar-thin::-webkit-scrollbar-thumb { background-color: #CBD5E0; border-radius: 4px; border: 2px solid #EDF2F7; }
+         .hover\\:scrollbar-thumb-gray-400:hover::-webkit-scrollbar-thumb { background-color: #A0AEC0; }
       `}</style>
-
-    </div>
+    </div> // End Root Sidebar Div
   );
 };
 
