@@ -3,9 +3,13 @@
 import React, { useState, useEffect } from 'react';
 import { Node } from 'reactflow';
 import { Bot, Zap, X, PlusCircle, Type, Code, Edit, GitBranch, Replace } from 'lucide-react';
-import { ActionDefinition, AvailableFunction, IntentDefinition } from '../types'; // Import types
+import { ActionDefinition, AvailableFunction, IntentDefinition, StartNodeDefine } from '../types'; // Import types
 
 // Mock data - In a real app, this would come from state management or an API
+const start: StartNodeDefine[] = [
+  { id: 'start', type: 'start', data: { storyName: 'Start' }, position: { x: 0, y: 0 } }
+];
+
 const intents: IntentDefinition[] = [
   { id: 'intent_greet', label: 'Greeting' , examples: ['hello', 'hi', 'hey']},
   { id: 'intent_order', label: 'Place Order' , examples: ['order', 'buy', 'purchase']},
@@ -32,7 +36,7 @@ interface SidebarProps {
   onClose: () => void;
 }
 
-type ActiveTab = 'intents' | 'actions';
+type ActiveTab = 'intents' | 'actions' | 'start';
 type ValueInputType = 'text' | 'function';
 type SidebarMode = 'view' | 'edit' | 'change'; // Keep 'change' mode
 
@@ -66,6 +70,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [newActionValue, setNewActionValue] = useState('');
   const [newActionValueType, setNewActionValueType] = useState<ValueInputType>('text');
 
+  // --- State for Start Node ---
+  const [storyName, setStoryName] = useState<string>(''); // State for storyName
   // --- Effects ---
   // Update active tab, configuration state, and reset mode when selectedNode changes
   useEffect(() => {
@@ -83,6 +89,9 @@ const Sidebar: React.FC<SidebarProps> = ({
       };
       setCurrentActionConfig(initialConfig);
       setCurrentValueInputType(initialConfig.valueType);
+    } else if (selectedNode?.type === 'start') {
+      setActiveTab('start');
+      setStoryName(selectedNode.data.storyName || ''); // Initialize storyName
     } else {
       setCurrentActionConfig({ title: '', name: '', value: '', valueType: 'text' });
       setCurrentValueInputType('text');
@@ -95,9 +104,17 @@ const Sidebar: React.FC<SidebarProps> = ({
   // Called when selecting an intent from the list (in 'change' mode)
   const handleIntentSelect = (intentId: string) => {
     if (selectedNode && selectedNode.type === 'intent') {
-      setCurrentIntentId(intentId); // Update local state first
-      onUpdateIntent(selectedNode.id, intentId); // Then update the actual node
-      setMode('view'); // Exit change mode after selection
+      const selectedIntent = intents.find((intent) => intent.id === intentId);
+  
+      const updatedNodeData = {
+        ...selectedNode.data, // Keep existing data
+        intentId, // Update intentId
+        examples: selectedIntent?.examples || [], // Set examples from the selected intent
+      };
+  
+      setCurrentIntentId(intentId); // Update local state
+      onUpdateIntent(selectedNode.id, updatedNodeData); // Pass the updated data to the parent
+      setMode('view'); // Exit change mode
     }
   };
 
@@ -189,10 +206,11 @@ const Sidebar: React.FC<SidebarProps> = ({
   };
 
   // --- Render Logic ---
-  if (!selectedNode || (selectedNode.type !== 'intent' && selectedNode.type !== 'action')) {
+  if (!selectedNode || (selectedNode.type !== 'start' && selectedNode.type !== 'intent' && selectedNode.type !== 'action')) {
     return null;
   }
 
+  const isStartNode = selectedNode.type === 'start';
   const isActionNodeSelected = selectedNode.type === 'action';
   const isIntentNodeSelected = selectedNode.type === 'intent';
 
@@ -208,7 +226,7 @@ const Sidebar: React.FC<SidebarProps> = ({
       {/* Header */}
       <div className="p-4 border-b border-gray-200 flex justify-between items-center min-h-[60px]">
         <h3 className="text-lg font-semibold text-gray-800">
-          {isActionNodeSelected ? 'Action Node' : 'Intent Node'}
+        {isActionNodeSelected ? 'Action Node' : (isIntentNodeSelected ? 'Intent Node' : (isStartNode ? 'Start Node' : 'Default Node'))}
         </h3>
         <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
           <X size={20} />
@@ -490,6 +508,66 @@ const Sidebar: React.FC<SidebarProps> = ({
                        Cancel Change
                     </button>
                </div>
+            )}
+          </>
+        )}
+
+        {isStartNode && (
+          <>
+            {mode === 'view' && (
+              <div className="space-y-3">
+                <h4 className="text-md font-semibold text-gray-700 mb-2">Start Node Configuration</h4>
+                <p className="text-sm">
+                  <span className="text-gray-500">Story Name:</span>{' '}
+                  <span className="font-medium text-gray-800">{storyName || 'N/A'}</span>
+                </p>
+                <div className="mt-4 flex gap-2">
+                  <button
+                    onClick={() => setMode('edit')}
+                    className="flex-1 flex items-center justify-center gap-2 bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 text-sm font-medium"
+                  >
+                    <Edit size={16} /> Edit Details
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {mode === 'edit' && (
+              <div className="space-y-4">
+                <h4 className="text-md font-semibold text-gray-700 mb-1">Edit Start Node</h4>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="storyName">
+                    Story Name
+                  </label>
+                  <input
+                    id="storyName"
+                    type="text"
+                    value={storyName}
+                    onChange={(e) => setStoryName(e.target.value)}
+                    className="block w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm"
+                    placeholder="Enter story name"
+                  />
+                </div>
+                <div className="mt-4 flex gap-2">
+                  <button
+                    onClick={() => {
+                      if (selectedNode) {
+                        selectedNode.data.storyName = storyName; // Update the node's data
+                      }
+                      setMode('view'); // Return to view mode
+                    }}
+                    className="flex-1 flex items-center justify-center gap-2 bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 text-sm font-medium"
+                  >
+                    Save
+                  </button>
+                  <button
+                    onClick={() => setMode('view')}
+                    className="flex-1 flex items-center justify-center gap-2 bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 text-sm font-medium"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
             )}
           </>
         )}
