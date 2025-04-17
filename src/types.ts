@@ -23,7 +23,8 @@ export interface IntentDefinition {
 
 // --- Node Data Types ---
 export interface StartNodeData {
-  storyName?: string; // Optional initially, will be added
+  story_id?: string; // Optional initially, will be added
+  label?: string;
 }
 
 export interface IntentNodeData {

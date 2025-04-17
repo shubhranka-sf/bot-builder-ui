@@ -6,7 +6,7 @@ import { StartNodeData } from '../../types'; // Import the specific data type
 
 // Use NodeProps with the specific StartNodeData type
 const StartNode: React.FC<NodeProps<StartNodeData>> = ({ data, selected }) => {
-  const storyName = data?.storyName || "Start"; // Fallback name
+  const storyName = data?.label || "Start"; // Fallback name
 
   return (
     <motion.div
