@@ -8,6 +8,16 @@ export interface ActionDefinition {
   valueType: 'text' | 'function';
 }
 
+export interface NodeData {
+  intentId?: string;
+  examples?: string[]; // Add examples to intent node data
+  title?: string;
+  name?: string;
+  value?: string;
+  valueType?: 'text' | 'function';
+  storyName?: string;
+}
+
 export interface AvailableFunction {
   name: string;
   description: string;
@@ -17,5 +27,18 @@ export interface AvailableFunction {
 export interface IntentDefinition {
   id: string;
   label: string;
-  examples?: string[]; // Added optional examples array
+  examples: string[];
+  // response: string
+}
+
+export interface StartNodeDefine {
+  id: string;
+  type: string;
+  data: {
+    storyName: string;
+  };
+  position: {
+    x: number;
+    y: number;
+  };
 }
