@@ -79,6 +79,10 @@
     }
 }
 
+.sidebar-open .chatbot-toggler {
+    right: 300px; /* Adjust to match the sidebar width */
+  }
+
 body.show-chatbot .chatbot-toggler {
     transform: rotate(90deg);
     background: #4aa017;

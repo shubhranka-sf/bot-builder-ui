@@ -1,6 +1,6 @@
-import React, { useState, useRef, useEffect } from "react";
-import "./style.css";
-import { Bot, BotMessageSquare } from "lucide-react";
+import React, { useState, useRef, useEffect } from 'react';
+import './style.css';
+import { Bot, BotMessageSquare } from 'lucide-react';
 
 interface Message {
   role: string;
@@ -26,11 +26,11 @@ interface ChatWidgetIOProps {
 
 const ChatBotWidget = ({
   callApi,
-  chatbotName = "Chatbot",
-  isTypingMessage = "Typing...",
-  IncommingErrMsg = "Oops! Something went wrong. Please try again.",
-  primaryColor = "#eb4034",
-  inputMsgPlaceholder = "Send a Message",
+  chatbotName = 'Chatbot',
+  isTypingMessage = 'Typing...',
+  IncommingErrMsg = 'Oops! Something went wrong. Please try again.',
+  primaryColor = '#eb4034',
+  inputMsgPlaceholder = 'Send a Message',
   chatIcon = <ChatIcon />,
   botIcon = <BotIcon />,
   botFontStyle = {},
@@ -40,7 +40,7 @@ const ChatBotWidget = ({
   messages = [],
   useInnerHTML = false,
 }: ChatWidgetIOProps) => {
-  const [userMessage, setUserMessage] = useState<string>("");
+  const [userMessage, setUserMessage] = useState<string>('');
   const [typing, setTyping] = useState<boolean>(false);
   const chatInputRef = useRef<any>(null);
   const chatboxRef = useRef<any>(null);
@@ -49,10 +49,10 @@ const ChatBotWidget = ({
     const trimmedMessage = userMessage.trim();
     if (!trimmedMessage) return;
 
-    setUserMessage("");
+    setUserMessage('');
 
     // Display outgoing message
-    const outgoingMessage = { role: "user", content: trimmedMessage };
+    const outgoingMessage = { role: 'user', content: trimmedMessage };
     handleNewMessage?.(outgoingMessage);
 
     try {
@@ -60,14 +60,14 @@ const ChatBotWidget = ({
 
       // Use the custom API call function
       const botResponse = await callApi(trimmedMessage);
-      console.log("Bot Response:", botResponse); // Debugging
+      console.log('Bot Response:', botResponse); // Debugging
 
       // Call the callback function with the bot's response
       onBotResponse?.(botResponse);
     } catch (error) {
-      console.error("Error in API call:", error); // Debugging
+      console.error('Error in API call:', error); // Debugging
       // Display error message if API call fails
-      const errorMessage = { role: "error", content: IncommingErrMsg };
+      const errorMessage = { role: 'error', content: IncommingErrMsg };
       handleNewMessage?.(errorMessage);
     } finally {
       setTyping(false);
@@ -78,29 +78,29 @@ const ChatBotWidget = ({
     setUserMessage(event.target.value);
 
     // Reset height to auto before calculating new height
-    chatInputRef.current.style.height = "auto";
+    chatInputRef.current.style.height = 'auto';
 
     // Adjust the height dynamically based on content
     chatInputRef.current.style.height = `${Math.min(chatInputRef.current.scrollHeight, 80)}px`;
   };
 
   const handleKeyPress = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && !event.shiftKey && window.innerWidth > 800) {
+    if (event.key === 'Enter' && !event.shiftKey && window.innerWidth > 800) {
       event.preventDefault();
       handleChat();
     }
   };
 
   const toggleChatbot = () => {
-    document.body.classList.toggle("show-chatbot");
+    document.body.classList.toggle('show-chatbot');
   };
 
   useEffect(() => {
-    const closeBtn: HTMLElement | null = document.querySelector(".close-btn");
-    closeBtn?.addEventListener("click", toggleChatbot);
+    const closeBtn: HTMLElement | null = document.querySelector('.close-btn');
+    closeBtn?.addEventListener('click', toggleChatbot);
 
     return () => {
-      closeBtn?.removeEventListener("click", toggleChatbot);
+      closeBtn?.removeEventListener('click', toggleChatbot);
     };
   }, []);
 
@@ -128,27 +128,19 @@ const ChatBotWidget = ({
       <div className="chatbot">
         <header style={{ background: primaryColor }}>
           <h2>{chatbotName}</h2>
-          <span
-            className="close-btn material-symbols-outlined"
-            onClick={toggleChatbot}
-          >
+          <span className="close-btn material-symbols-outlined" onClick={toggleChatbot}>
             close
           </span>
         </header>
         <ul className="chatbox" ref={chatboxRef}>
           {messages.map((msg, index) => (
-            <li
-              key={index}
-              className={`chat ${msg.role === "user" ? "outgoing" : "incoming"}`}
-            >
-              {msg.role !== "user" && (
-                <span className="material-symbols-outlined">{botIcon}</span>
-              )}
+            <li key={index} className={`chat ${msg.role === 'user' ? 'outgoing' : 'incoming'}`}>
+              {msg.role !== 'user' && <span className="material-symbols-outlined">{botIcon}</span>}
               <p
                 style={
-                  msg.role === "assistant"
+                  msg.role === 'assistant'
                     ? botFontStyle
-                    : msg.role === "error"
+                    : msg.role === 'error'
                       ? botFontStyle
                       : { background: primaryColor }
                 }
