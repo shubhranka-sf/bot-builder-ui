@@ -1,0 +1,21 @@
+{
+  "stories": [
+    {
+      "name": "greeting_flow",
+      "steps": [
+        {
+          "node": "intent",
+          "name": "greet"
+        },
+        {
+          "node": "action",
+          "name": "uttter_greet"
+        }
+      ]
+    },
+    {
+      "name": "booking_flow",
+      "steps": [{ "user": "book_flight", "bot": "book_flight" }]
+    }
+  ]
+}

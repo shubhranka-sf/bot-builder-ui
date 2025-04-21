@@ -4,7 +4,6 @@ import { Zap, GitBranch } from 'lucide-react'; // Import GitBranch icon
 import { motion } from 'framer-motion';
 
 // Updated data structure for Action Nodes
-
 interface ActionNodeData {
   title: string; // User-friendly title
   name: string; // Action identifier (e.g., SendMessage, ApiCall)
