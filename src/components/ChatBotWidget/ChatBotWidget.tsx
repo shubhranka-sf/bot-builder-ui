@@ -96,6 +96,8 @@ const ChatBotWidget = ({
   };
 
   useEffect(() => {
+    console.log('Chatbot mounted'); // Debugging
+
     const closeBtn: HTMLElement | null = document.querySelector('.close-btn');
     closeBtn?.addEventListener('click', toggleChatbot);
 

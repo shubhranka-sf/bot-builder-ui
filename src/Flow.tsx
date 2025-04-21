@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useMemo, useRef, useEffect, Suspense } from 'react';
 import ReactFlow, {
   Controls,
   Background,
@@ -31,15 +31,14 @@ import {
   ActionNodeData,
   IntentDefinition,
 } from './types';
-import {
-  initialNodes,
-  initialEdges,
-  mockDefinedActions,
-  mockIntents,
-  defaultEdgeOptions,
-  getId,
-} from './data/mockData';
-import ChatBotWidget from './components/ChatBotWidget';
+import { mockDefinedActions, mockIntents, defaultEdgeOptions, getId } from './data/mockData';
+// import ChatBotWidget from './components/ChatBotWidget';
+const ChatBotWidget = React.lazy(() => import('./components/ChatBotWidget'));
+import { useAtom, useAtomValue } from 'jotai';
+import { EdgesAtom, isLoadingAtom, NodesAtom } from './store/flowAtom';
+import { useDebouncedCallback } from 'use-debounce';
+import { useSetAtom } from 'jotai';
+import { toast, ToastContainer } from 'react-toastify';
 
 const colorClasses: { [key: string]: { bg: string; hoverBg: string } } = {
   purple: { bg: 'bg-purple-500', hoverBg: 'hover:bg-purple-600' },
@@ -63,8 +62,8 @@ type StoryStep = {
 
 function FlowContent() {
   const [nodes, setNodes] =
-    useState<Node<StartNodeData | IntentNodeData | ActionNodeData | any>[]>(initialNodes);
-  const [edges, setEdges] = useState<Edge[]>(initialEdges);
+    useAtom<Node<StartNodeData | IntentNodeData | ActionNodeData | any>[]>(NodesAtom);
+  const [edges, setEdges] = useAtom<Edge[]>(EdgesAtom);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
   const [isFabMenuOpen, setIsFabMenuOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -81,7 +80,7 @@ function FlowContent() {
 
   const [definedActions, setDefinedActions] = useState<ActionDefinition[]>(mockDefinedActions);
   const [intents, setIntents] = useState<IntentDefinition[]>(mockIntents);
-
+  const [isLoading, setLoading] = useAtom(isLoadingAtom);
   const nodeTypes: NodeTypes = useMemo(
     () => ({
       start: StartNode,
@@ -108,34 +107,52 @@ function FlowContent() {
   );
 
   // --- Node Update Callbacks (updateStartNode, updateIntentNode, updateActionNode - unchanged) ---
-  const updateStartNode = useCallback(
-    (nodeId: string, newStoryName: string) => {
+  // Generic update function
+  const updateNode = useCallback(
+    <T extends StartNodeData | IntentNodeData | ActionNodeData>(
+      nodeId: string,
+      nodeType: string,
+      updateData: Partial<T>
+    ) => {
       setNodes((nds) =>
         nds.map((node) =>
-          node.id === nodeId && node.type === 'start'
-            ? { ...node, data: { ...node.data, label: newStoryName } }
+          node.id === nodeId && node.type === nodeType
+            ? { ...node, data: { ...node.data, ...updateData } }
             : node
         )
       );
+
       setSelectedNode((prev) =>
-        prev && prev.id === nodeId && prev.type === 'start'
-          ? { ...prev, data: { ...prev.data, storyName: newStoryName } }
+        prev && prev.id === nodeId && prev.type === nodeType
+          ? { ...prev, data: { ...prev.data, ...updateData } }
           : prev
       );
     },
-    [setNodes]
+    [setNodes, setSelectedNode]
   );
+
+  // Start node updater
+  const updateStartNode = useCallback(
+    (nodeId: string, newStoryName: string) => {
+      updateNode(nodeId, 'start', {
+        label: newStoryName,
+        storyName: newStoryName,
+      });
+    },
+    [updateNode]
+  );
+
+  // Intent node updater
   const updateIntentNode = useCallback(
     (nodeId: string, newIntentId: string, newExamples?: string[]) => {
       const intentDefinition = intents.find((i) => i.id === newIntentId);
       const finalExamples = newExamples ?? intentDefinition?.examples ?? [];
-      setNodes((nds) =>
-        nds.map((node) =>
-          node.id === nodeId && node.type === 'intent'
-            ? { ...node, data: { ...node.data, intentId: newIntentId, examples: finalExamples } }
-            : node
-        )
-      );
+
+      updateNode(nodeId, 'intent', {
+        intentId: newIntentId,
+        examples: finalExamples,
+      });
+
       if (newExamples !== undefined) {
         setIntents((prevIntents) => {
           const intentIndex = prevIntents.findIndex((intent) => intent.id === newIntentId);
@@ -145,6 +162,8 @@ function FlowContent() {
               ...updatedIntents[intentIndex],
               examples: finalExamples,
             };
+            console.log('Updated intent examples:', updatedIntents[intentIndex]);
+
             return updatedIntents;
           } else {
             console.warn(`Intent definition ID "${newIntentId}" not found during edit save.`);
@@ -152,21 +171,20 @@ function FlowContent() {
           }
         });
       }
-      setSelectedNode((prev) =>
-        prev && prev.id === nodeId && prev.type === 'intent'
-          ? { ...prev, data: { ...prev.data, intentId: newIntentId, examples: finalExamples } }
-          : prev
-      );
     },
-    [setNodes, setIntents, intents]
+    [updateNode, intents, setIntents]
   );
+
+  // Action node updater
   const updateActionNode = useCallback(
     (nodeId: string, actionData: Partial<ActionNodeData>) => {
       const nodeToUpdate = getNode(nodeId);
       if (!nodeToUpdate || nodeToUpdate.type !== 'action') return;
-      let fullActionData: ActionNodeData;
+
       const actionDefinition = definedActions.find((a) => a.name === actionData.name);
       const isChangeAction = actionData.name && Object.keys(actionData).length === 1;
+
+      let fullActionData: ActionNodeData;
       if (isChangeAction && actionDefinition) {
         fullActionData = { ...actionDefinition };
       } else {
@@ -175,70 +193,48 @@ function FlowContent() {
           ...actionData,
           title:
             actionData.title || actionDefinition?.title || actionData.name || 'Untitled Action',
-          name: actionData.name || actionDefinition?.name || `action_${nodeId.substring(0, 4)}`,
+          name: actionData.name || actionDefinition?.name || `action_${nodeId.slice(0, 4)}`,
           value: actionData.value ?? actionDefinition?.value ?? '',
           valueType: actionData.valueType || actionDefinition?.valueType || 'text',
         };
       }
-      setNodes((nds) =>
-        nds.map((node) =>
-          node.id === nodeId && node.type === 'action'
-            ? { ...node, data: { ...node.data, ...fullActionData } }
-            : node
-        )
-      );
+
+      updateNode(nodeId, 'action', fullActionData);
+
       if (!isChangeAction && fullActionData.name) {
         setDefinedActions((prevActions) => {
-          const actionIndex = prevActions.findIndex(
-            (action) => action.name === fullActionData.name
-          );
-          if (actionIndex > -1) {
-            const updatedActions = [...prevActions];
-            const existingId = updatedActions[actionIndex].id;
-            updatedActions[actionIndex] = { ...fullActionData, id: existingId };
-            return updatedActions;
+          const index = prevActions.findIndex((a) => a.name === fullActionData.name);
+          if (index > -1) {
+            const updated = [...prevActions];
+            const existingId = updated[index].id;
+            updated[index] = { ...fullActionData, id: existingId };
+            return updated;
           } else {
-            console.warn(
-              `Action definition "${fullActionData.name}" not found during save. Adding new.`
-            );
-            const newActionDef: ActionDefinition = { ...fullActionData };
-            return [...prevActions, newActionDef];
+            console.warn(`Action definition "${fullActionData.name}" not found. Adding new.`);
+            return [...prevActions, fullActionData];
           }
         });
       }
-      setSelectedNode((prev) =>
-        prev && prev.id === nodeId && prev.type === 'action'
-          ? { ...prev, data: { ...prev.data, ...fullActionData } }
-          : prev
-      );
     },
-    [setNodes, setDefinedActions, getNode, definedActions]
+    [getNode, definedActions, setDefinedActions, updateNode]
   );
 
   // --- onSelectionChange, clearSelectionAndCloseSidebar, getCenterPosition (unchanged) ---
-  const onSelectionChange = useCallback(
-    ({ nodes: selectedNodes }: OnSelectionChangeParams) => {
-      const newSelectedNode = selectedNodes.length === 1 ? selectedNodes[0] : null;
-      setSelectedNode(newSelectedNode);
-      setIsFabMenuOpen(false);
-      const isNowConfigurable = isConfigurableNode(newSelectedNode);
-      if ((!newSelectedNode || !isNowConfigurable) && isSidebarOpen) {
-        setIsSidebarOpen(false);
-      }
-    },
-    [isSidebarOpen]
-  );
+  const onSelectionChange = useCallback(({ nodes: selectedNodes }: OnSelectionChangeParams) => {
+    const newSelectedNode = selectedNodes.length === 1 ? selectedNodes[0] : null;
+    setSelectedNode(newSelectedNode);
+    setIsFabMenuOpen(false);
+    // Close sidebar if no configurable node is selected
+    if (!newSelectedNode || !isConfigurableNode(newSelectedNode)) {
+      setIsSidebarOpen(false);
+    }
+  }, []);
   const clearSelectionAndCloseSidebar = useCallback(() => {
-    const currentId = selectedNode?.id;
     setSelectedNode(null);
     setIsFabMenuOpen(false);
     setIsSidebarOpen(false);
-    if (currentId) {
-      rfSetNodes(
-        getNodes().map((node) => (node.id === currentId ? { ...node, selected: false } : node))
-      );
-    }
-  }, [selectedNode, rfSetNodes, getNodes]);
+    rfSetNodes(getNodes().map((node) => ({ ...node, selected: false })));
+  }, [rfSetNodes, getNodes]);
 
   const getCenterPosition = useCallback((): XYPosition => {
     const fp = document.querySelector('.react-flow__pane');
@@ -289,7 +285,7 @@ function FlowContent() {
   const handleAddNewActionDefinition = useCallback(
     (newAction: ActionDefinition) => {
       setDefinedActions((prev) => [...prev, newAction]);
-      console.log('Added new action definition:', newAction);
+      // console.log('Added new action definition:', newAction);
     },
     [setDefinedActions]
   );
@@ -302,7 +298,7 @@ function FlowContent() {
         }
         return [...prev, newIntent];
       });
-      console.log('Added new intent definition:', newIntent);
+      // console.log('Added new intent definition:', newIntent);
     },
     [setIntents]
   );
@@ -311,7 +307,9 @@ function FlowContent() {
   }, []);
 
   // --- Export Flow Data (Unchanged - already handles multiple start nodes) ---
-  const exportFlowData = useCallback(() => {
+  const exportFlowData = useCallback(async () => {
+    setLoading(true); // Set loading to true immediately when starting the process
+
     const allNodes = getNodes();
     const allEdges = getEdges();
 
@@ -404,31 +402,44 @@ function FlowContent() {
     // 4. Assemble Final JSON
     const exportData = { intents: formattedIntents, actions: formattedActions, stories: stories };
 
-    // 4. Assemble Final JSON
-    // const exportData = { intents: formattedIntents, actions: formattedActions, stories };
     console.log('Exported Data:', JSON.stringify(exportData, null, 2));
 
-    fetch(`${import.meta.env.VITE_BACKEND_BASE_URL}/train`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(exportData),
-    })
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error('Failed to send data to the API');
-        }
-        return response.json();
-      })
-      .then((data) => {
-        console.log('✅ API response:', data);
-      })
-      .catch((error) => {
-        console.error('❌ Error sending data to API:', error);
+    // Use `toast.promise` to show loading and handle success/failure
+    await toast
+      .promise(
+        fetch(`${import.meta.env.VITE_BACKEND_BASE_URL}/train`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(exportData),
+        })
+          .then((response) => {
+            if (!response.ok) {
+              throw new Error('Failed to send data to the API');
+            }
+            return response.json();
+          })
+          .then((data) => {
+            console.log('✅ API response:', data);
+            return data;
+          })
+          .catch((error) => {
+            console.error('❌ Error sending data to API:', error);
+            throw error;
+          }),
+        {
+          pending: 'Building Bot...',
+          success: 'Bot Builded Successfully!',
+          error: 'Failed to Build Bot',
+        },
+        { autoClose: 2000 }
+      )
+      .finally(() => {
+        setLoading(false);
       });
   }, [intents, definedActions, getNodes, getEdges]);
-  // --- Effects (FAB outside click - unchanged) ---
+
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (fabRef.current && !fabRef.current.contains(event.target as Node)) {
@@ -442,6 +453,23 @@ function FlowContent() {
     }
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isFabMenuOpen]);
+
+  const saveNodesToLocalStorage = useDebouncedCallback((nodes) => {
+    localStorage.setItem('nodes', JSON.stringify(nodes));
+    console.log('Saving nodes to localStorage:', nodes);
+  }, 1000);
+  useEffect(() => {
+    saveNodesToLocalStorage(nodes);
+  }, [nodes, saveNodesToLocalStorage]);
+
+  // Debounced function for edges
+  const saveEdgesToLocalStorage = useDebouncedCallback((edges) => {
+    localStorage.setItem('edges', JSON.stringify(edges));
+    console.log('Saving edges to localStorage:', edges);
+  }, 1000);
+  useEffect(() => {
+    saveEdgesToLocalStorage(edges);
+  }, [edges, saveEdgesToLocalStorage]);
 
   // --- Animation Variants (unchanged) ---
   const fabMenuVariants = {
@@ -497,17 +525,27 @@ function FlowContent() {
           <Controls /> <Background />
         </ReactFlow>
         <div className="absolute top-4 right-6 z-10 flex gap-3">
-          {' '}
-          <motion.button
-            onClick={exportFlowData}
-            className="flex items-center  text-center  gap-1 justify-center px-4 py-2 bg-blue-600 text-white rounded-md shadow-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors duration-200 ease-in-out text-sm font-medium"
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-          >
-            {' '}
-            Build Bot <Bot />
-          </motion.button>{' '}
+          {isLoading ? (
+            <motion.button
+              className="flex items-center text-center gap-1 justify-center px-4 py-2 bg-blue-600/70 text-white rounded-md shadow-md  text-sm font-medium"
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              disabled
+            >
+              Building Bot... <Bot />
+            </motion.button>
+          ) : (
+            <motion.button
+              onClick={exportFlowData}
+              className="flex items-center text-center gap-1 justify-center px-4 py-2 bg-blue-600 text-white rounded-md shadow-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors duration-200 ease-in-out text-sm font-medium"
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+            >
+              Build Bot <Bot />
+            </motion.button>
+          )}
         </div>
+
         <AnimatePresence>
           {' '}
           {selectedNode && isConfigurableNode(selectedNode) && !isSidebarOpen && (
@@ -585,29 +623,31 @@ function FlowContent() {
             <Plus size={28} />{' '}
           </motion.button>{' '}
         </div>
-        <ChatBotWidget
-          callApi={async (message) => {
-            const data = await fetch(`${import.meta.env.VITE_BACKEND_BASE_URL}/predict`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                text: message,
-                sender_id: 'user1',
-                model_name: 'default_model.tar.gz',
-              }),
-            });
-            console.log('API response:', data);
+        <Suspense fallback={<div>Loading...</div>}>
+          <ChatBotWidget
+            callApi={async (message) => {
+              const data = await fetch(`${import.meta.env.VITE_BACKEND_BASE_URL}/predict`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  text: message,
+                  sender_id: 'user1',
+                  model_name: 'default_model.tar.gz',
+                }),
+              });
+              // console.log('API response:', data);
 
-            const res = await data.json();
-            return res.response[0].text;
-          }}
-          handleNewMessage={handleNewMessage}
-          onBotResponse={onBotResponse}
-          messages={messages}
-          primaryColor="#4F46E5"
-        />
+              const res = await data.json();
+              return res.response[0].text;
+            }}
+            handleNewMessage={handleNewMessage}
+            onBotResponse={onBotResponse}
+            messages={messages}
+            primaryColor="#4F46E5"
+          />
+        </Suspense>
       </div>
       <AnimatePresence>
         {' '}
@@ -638,9 +678,6 @@ function FlowContent() {
     </div>
   );
 }
-
-// Tailwind JIT hints (unchanged)
-// bg-purple-500 hover:bg-purple-600 bg-blue-500 hover:bg-blue-600 bg-green-500 hover:bg-green-600 bg-red-500 hover:bg-red-600 bg-gray-500 hover:bg-gray-600
 
 function Flow() {
   return (
