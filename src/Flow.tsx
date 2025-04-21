@@ -32,13 +32,12 @@ import {
   IntentDefinition,
 } from './types';
 import { mockDefinedActions, mockIntents, defaultEdgeOptions, getId } from './data/mockData';
-// import ChatBotWidget from './components/ChatBotWidget';
-const ChatBotWidget = React.lazy(() => import('./components/ChatBotWidget'));
-import { useAtom, useAtomValue } from 'jotai';
+import { useAtom } from 'jotai';
 import { EdgesAtom, isLoadingAtom, NodesAtom } from './store/flowAtom';
 import { useDebouncedCallback } from 'use-debounce';
-import { useSetAtom } from 'jotai';
-import { toast, ToastContainer } from 'react-toastify';
+import { toast } from 'react-toastify';
+import { isBotTrainedAtom } from './state/flowAtom';
+const ChatBotWidget = React.lazy(() => import('./components/ChatBotWidget'));
 
 const colorClasses: { [key: string]: { bg: string; hoverBg: string } } = {
   purple: { bg: 'bg-purple-500', hoverBg: 'hover:bg-purple-600' },
@@ -81,6 +80,7 @@ function FlowContent() {
   const [definedActions, setDefinedActions] = useState<ActionDefinition[]>(mockDefinedActions);
   const [intents, setIntents] = useState<IntentDefinition[]>(mockIntents);
   const [isLoading, setLoading] = useAtom(isLoadingAtom);
+  const [isTrained, setIsTrained] = useAtom(isBotTrainedAtom);
   const nodeTypes: NodeTypes = useMemo(
     () => ({
       start: StartNode,
@@ -416,15 +416,18 @@ function FlowContent() {
         })
           .then((response) => {
             if (!response.ok) {
+              setIsTrained(false);
               throw new Error('Failed to send data to the API');
             }
             return response.json();
           })
           .then((data) => {
             console.log('✅ API response:', data);
+            setIsTrained(true);
             return data;
           })
           .catch((error) => {
+            setIsTrained(false);
             console.error('❌ Error sending data to API:', error);
             throw error;
           }),
@@ -623,31 +626,33 @@ function FlowContent() {
             <Plus size={28} />{' '}
           </motion.button>{' '}
         </div>
-        <Suspense fallback={<div>Loading...</div>}>
-          <ChatBotWidget
-            callApi={async (message) => {
-              const data = await fetch(`${import.meta.env.VITE_BACKEND_BASE_URL}/predict`, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                  text: message,
-                  sender_id: 'user1',
-                  model_name: 'default_model.tar.gz',
-                }),
-              });
-              // console.log('API response:', data);
+        {isTrained ? (
+          <Suspense fallback={<div>Loading...</div>}>
+            <ChatBotWidget
+              callApi={async (message) => {
+                const data = await fetch(`${import.meta.env.VITE_BACKEND_BASE_URL}/predict`, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({
+                    text: message,
+                    sender_id: 'user1',
+                    model_name: 'default_model.tar.gz',
+                  }),
+                });
+                // console.log('API response:', data);
 
-              const res = await data.json();
-              return res.response[0].text;
-            }}
-            handleNewMessage={handleNewMessage}
-            onBotResponse={onBotResponse}
-            messages={messages}
-            primaryColor="#4F46E5"
-          />
-        </Suspense>
+                const res = await data.json();
+                return res.response[0].text;
+              }}
+              handleNewMessage={handleNewMessage}
+              onBotResponse={onBotResponse}
+              messages={messages}
+              primaryColor="#4F46E5"
+            />
+          </Suspense>
+        ) : null}
       </div>
       <AnimatePresence>
         {' '}
