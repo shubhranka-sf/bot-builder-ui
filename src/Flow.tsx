@@ -322,7 +322,7 @@ function FlowContent() {
              }
 
              // If not button format, export as text with variations array
-            return { type: 'text', name: action.name, value: value };
+            return { type: 'text', name: action.name, variations: value };
         }
     });
 
