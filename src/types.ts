@@ -38,7 +38,6 @@ export interface IntentNodeData {
   entities?: string[]; // Reflect entities of the linked definition
   label?: string; // Display label from definition
 }
-
 // ActionNodeData mirrors ActionDefinition but omits 'id' as it's part of the Node itself
 export interface ActionNodeData extends Omit<ActionDefinition, 'id'> {}
 
