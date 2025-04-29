@@ -118,6 +118,7 @@ function FlowContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Empty dependency array ensures this runs only once on mount
 
+  const [isTrained, setIsTrained] = useAtom(isBotTrainedAtom);
   const nodeTypes: NodeTypes = useMemo(
     () => ({ start: StartNode, intent: IntentNode, action: ActionNode, end: EndNode }),
     []
@@ -596,13 +597,21 @@ function FlowContent() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(exportData),
         })
-          .then(async (response) => {
-            const body = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(body.message || `API Error ${response.status}`);
-            return body;
+          .then((response) => {
+            if (!response.ok) {
+              setIsTrained(false);
+              throw new Error('Failed to send data to the API');
+            }
+            return response.json();
+          })
+          .then((data) => {
+            console.log('✅ API response:', data);
+            setIsTrained(true);
+            return data;
           })
           .catch((error) => {
-            console.error('API Error:', error);
+            setIsTrained(false);
+            console.error('❌ Error sending data to API:', error);
             throw error;
           }),
         {
@@ -829,32 +838,33 @@ function FlowContent() {
             <Plus size={28} />{' '}
           </motion.button>{' '}
         </div>
+        {isTrained ? (
+          <Suspense fallback={<div>Loading...</div>}>
+            <ChatBotWidget
+              callApi={async (message) => {
+                const data = await fetch(`${import.meta.env.VITE_BACKEND_BASE_URL}/predict`, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({
+                    text: message,
+                    sender_id: 'user1',
+                    model_name: 'default_model.tar.gz',
+                  }),
+                });
+                // console.log('API response:', data);
 
-        {/* ChatBot */}
-        <ChatBotWidget
-          callApi={async (message) => {
-            const data = await fetch(`${import.meta.env.VITE_BACKEND_BASE_URL}/predict`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                text: message,
-                sender_id: 'user1',
-                model_name: 'default_model.tar.gz',
-              }),
-            });
-            // console.log('API response:', data);
-
-            const res = await data.json();
-            return res.response[0].text;
-          }}
-          handleNewMessage={handleNewMessage}
-          onBotResponse={onBotResponse}
-          messages={messages}
-          primaryColor="#4F46E5"
-        />
-        {/* </Suspense> */}
+                const res = await data.json();
+                return res.response[0].text;
+              }}
+              handleNewMessage={handleNewMessage}
+              onBotResponse={onBotResponse}
+              messages={messages}
+              primaryColor="#4F46E5"
+            />
+          </Suspense>
+        ) : null}
       </div>
 
       {/* Sidebar (No Animation Wrapper) */}
