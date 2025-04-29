@@ -33,6 +33,7 @@ import ReactFlow, {
   useReactFlow,
   ReactFlowProvider,
   XYPosition,
+  // ConnectionMode // Optional import
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { Bot, Zap, FlagOff, Plus, Settings, PlayCircle } from 'lucide-react';
@@ -49,14 +50,22 @@ import {
   ActionNodeData,
   IntentDefinition,
 } from './types';
-import { mockDefinedActions, mockIntents, defaultEdgeOptions, getId } from './data/mockData';
-// import ChatBotWidget from './components/ChatBotWidget';
+// Import processed edges if using defaults application in mockData.ts
+import {
+  mockDefinedActions,
+  mockIntents,
+  initialNodes as initialNodesData,
+  processedInitialEdges,
+  defaultEdgeOptions,
+  getId,
+} from './data/mockData';
 const ChatBotWidget = React.lazy(() => import('./components/ChatBotWidget'));
-import { useAtom, useAtomValue } from 'jotai';
+import { useAtom } from 'jotai';
 import { EdgesAtom, isLoadingAtom, NodesAtom } from './store/flowAtom';
 import { useDebouncedCallback } from 'use-debounce';
-import { useSetAtom } from 'jotai';
-import { toast, ToastContainer } from 'react-toastify';
+import { toast } from 'react-toastify'; // Removed ToastContainer import here
+import 'react-toastify/dist/ReactToastify.css';
+import { parseEntitiesFromExamples } from './utils/entityParser';
 
 const colorClasses: { [key: string]: { bg: string; hoverBg: string } } = {
   purple: { bg: 'bg-purple-500', hoverBg: 'hover:bg-purple-600' },
@@ -66,28 +75,29 @@ const colorClasses: { [key: string]: { bg: string; hoverBg: string } } = {
   gray: { bg: 'bg-gray-500', hoverBg: 'hover:bg-gray-600' },
 };
 
-// Helper function to check if node is configurable
 function isConfigurableNode(node: Node | null): boolean {
   if (!node) return false;
   return node.type === 'start' || node.type === 'intent' || node.type === 'action';
 }
 
-// Helper type for exported story step
 type StoryStep = {
   node: 'intent' | 'action';
   name: string;
 };
 
 function FlowContent() {
-  const [nodes, setNodes] =
-    useAtom<Node<StartNodeData | IntentNodeData | ActionNodeData | any>[]>(NodesAtom);
-  const [edges, setEdges] = useAtom<Edge[]>(EdgesAtom);
+  // Use Jotai atoms for state
+  const [nodes, setNodes] = useAtom(NodesAtom);
+  const [edges, setEdges] = useAtom(EdgesAtom);
+  // Local component state
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
   const [isFabMenuOpen, setIsFabMenuOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [messages, setMessages] = useState([]);
+  const [messages, setMessages] = useState<Array<{ role: string; content: string }>>([]);
   const fabRef = useRef<HTMLDivElement>(null);
   const {
+    setViewport,
+    getViewport,
     setNodes: rfSetNodes,
     getNodes,
     getEdges,
@@ -96,20 +106,43 @@ function FlowContent() {
     getNode,
   } = useReactFlow();
 
+  // Global definitions state
   const [definedActions, setDefinedActions] = useState<ActionDefinition[]>(mockDefinedActions);
   const [intents, setIntents] = useState<IntentDefinition[]>(mockIntents);
   const [isLoading, setLoading] = useAtom(isLoadingAtom);
+
+  // Initialize nodes/edges from local storage or mock data ONCE
+  useEffect(() => {
+    const storedNodes = localStorage.getItem('nodes');
+    const storedEdges = localStorage.getItem('edges');
+
+    if (storedNodes && storedNodes !== '[]') {
+      console.log('Loading nodes from localStorage');
+      setNodes(JSON.parse(storedNodes));
+    } else {
+      console.log('Initializing nodes from mock data');
+      // Use initialNodesData directly from mockData import
+      setNodes(initialNodesData);
+    }
+
+    if (storedEdges && storedEdges !== '[]') {
+      console.log('Loading edges from localStorage');
+      setEdges(JSON.parse(storedEdges));
+    } else {
+      console.log('Initializing edges from mock data');
+      setEdges(processedInitialEdges); // Use edges with defaults applied
+    }
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Empty dependency array ensures this runs only once on mount
+
+  const [isTrained, setIsTrained] = useAtom(isBotTrainedAtom);
   const nodeTypes: NodeTypes = useMemo(
-    () => ({
-      start: StartNode,
-      intent: IntentNode,
-      action: ActionNode,
-      end: EndNode,
-    }),
+    () => ({ start: StartNode, intent: IntentNode, action: ActionNode, end: EndNode }),
     []
   );
 
-  // --- Callbacks (onNodesChange, onEdgesChange, onConnect - unchanged) ---
+  // --- Callbacks ---
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => setNodes((nds) => applyNodeChanges(changes, nds)),
     [setNodes]
@@ -124,8 +157,7 @@ function FlowContent() {
     [setEdges]
   );
 
-  // --- Node Update Callbacks (updateStartNode, updateIntentNode, updateActionNode - unchanged) ---
-  // Generic update function
+  // --- Node Update Logic ---
   const updateNode = useCallback(
     <T extends StartNodeData | IntentNodeData | ActionNodeData>(
       nodeId: string,
@@ -139,97 +171,128 @@ function FlowContent() {
             : node
         )
       );
-
       setSelectedNode((prev) =>
         prev && prev.id === nodeId && prev.type === nodeType
           ? { ...prev, data: { ...prev.data, ...updateData } }
           : prev
       );
     },
-    [setNodes, setSelectedNode]
+    [setNodes]
   );
 
-  // Start node updater
   const updateStartNode = useCallback(
-    (nodeId: string, newStoryName: string) => {
-      updateNode(nodeId, 'start', {
-        label: newStoryName,
-        storyName: newStoryName,
-      });
+    (nodeId: string, newStoryName: string, newStoryId?: string) => {
+      const updateData: Partial<StartNodeData> = { storyName: newStoryName, label: newStoryName };
+      if (newStoryId !== undefined) updateData.storyId = newStoryId;
+      updateNode<StartNodeData>(nodeId, 'start', updateData);
     },
     [updateNode]
   );
 
-  // Intent node updater
   const updateIntentNode = useCallback(
     (nodeId: string, newIntentId: string, newExamples?: string[]) => {
       const intentDefinition = intents.find((i) => i.id === newIntentId);
       const finalExamples = newExamples ?? intentDefinition?.examples ?? [];
-
-      updateNode(nodeId, 'intent', {
+      const parsedEntities = parseEntitiesFromExamples(finalExamples);
+      updateNode<IntentNodeData>(nodeId, 'intent', {
         intentId: newIntentId,
         examples: finalExamples,
+        entities: parsedEntities,
+        label: intentDefinition?.label,
       });
-
       if (newExamples !== undefined) {
         setIntents((prevIntents) => {
-          const intentIndex = prevIntents.findIndex((intent) => intent.id === newIntentId);
+          const intentIndex = prevIntents.findIndex((i) => i.id === newIntentId);
           if (intentIndex > -1) {
             const updatedIntents = [...prevIntents];
             updatedIntents[intentIndex] = {
               ...updatedIntents[intentIndex],
               examples: finalExamples,
+              entities: parsedEntities,
             };
-            console.log('Updated intent examples:', updatedIntents[intentIndex]);
-
             return updatedIntents;
-          } else {
-            console.warn(`Intent definition ID "${newIntentId}" not found during edit save.`);
-            return prevIntents;
           }
+          return prevIntents;
         });
       }
     },
     [updateNode, intents, setIntents]
   );
 
-  // Action node updater
+  // Updated for variations
   const updateActionNode = useCallback(
     (nodeId: string, actionData: Partial<ActionNodeData>) => {
       const nodeToUpdate = getNode(nodeId);
       if (!nodeToUpdate || nodeToUpdate.type !== 'action') return;
 
-      const actionDefinition = definedActions.find((a) => a.name === actionData.name);
-      const isChangeAction = actionData.name && Object.keys(actionData).length === 1;
+      const isChangingWhichAction =
+        actionData.name &&
+        Object.keys(actionData).length === 1 &&
+        actionData.name !== nodeToUpdate.data?.name;
+      let finalActionData: ActionNodeData;
 
-      let fullActionData: ActionNodeData;
-      if (isChangeAction && actionDefinition) {
-        fullActionData = { ...actionDefinition };
+      if (isChangingWhichAction && actionData.name) {
+        const newActionDefinition = definedActions.find((a) => a.name === actionData.name);
+        if (newActionDefinition) {
+          // Important: Create a copy of the definition for the node data
+          finalActionData = { ...newActionDefinition };
+        } else {
+          console.warn(`Selected action definition "${actionData.name}" not found.`);
+          finalActionData = {
+            name: actionData.name,
+            title: actionData.name,
+            valueType: 'text',
+            variations: [''],
+          }; // Basic fallback
+        }
       } else {
-        fullActionData = {
-          ...(actionDefinition || {}),
-          ...actionData,
+        // Merge edits onto current node data, prioritize incoming actionData
+        const baseData = nodeToUpdate.data || {};
+        const determinedType = actionData.valueType || baseData.valueType || 'text';
+        const mergedVariations =
+          determinedType === 'text'
+            ? (actionData.variations ?? baseData.variations ?? [''])
+            : undefined;
+
+        finalActionData = {
+          name: actionData.name || baseData.name || `action_${nodeId.slice(0, 4)}`,
           title:
-            actionData.title || actionDefinition?.title || actionData.name || 'Untitled Action',
-          name: actionData.name || actionDefinition?.name || `action_${nodeId.slice(0, 4)}`,
-          value: actionData.value ?? actionDefinition?.value ?? '',
-          valueType: actionData.valueType || actionDefinition?.valueType || 'text',
+            actionData.title ||
+            baseData.title ||
+            actionData.name ||
+            baseData.name ||
+            'Untitled Action',
+          valueType: determinedType,
+          // Handle value/variations based on the *determined* type
+          value:
+            determinedType === 'function'
+              ? (actionData.value ?? baseData.value ?? '') // Use func value
+              : (mergedVariations?.[0] ?? ''), // Use first variation for value
+          variations: mergedVariations,
         };
       }
 
-      updateNode(nodeId, 'action', fullActionData);
+      updateNode<ActionNodeData>(nodeId, 'action', finalActionData);
 
-      if (!isChangeAction && fullActionData.name) {
+      // Update global definition if not just changing which action is selected
+      if (!isChangingWhichAction && finalActionData.name) {
         setDefinedActions((prevActions) => {
-          const index = prevActions.findIndex((a) => a.name === fullActionData.name);
+          const index = prevActions.findIndex((a) => a.name === finalActionData.name);
+          const definitionToUpdate = {
+            ...finalActionData,
+            id: index > -1 ? prevActions[index].id : `action_${Date.now()}`,
+          }; // Preserve or create ID
+
           if (index > -1) {
             const updated = [...prevActions];
-            const existingId = updated[index].id;
-            updated[index] = { ...fullActionData, id: existingId };
+            updated[index] = definitionToUpdate; // Overwrite existing
+            console.log('Updated action definition:', updated[index]);
             return updated;
           } else {
-            console.warn(`Action definition "${fullActionData.name}" not found. Adding new.`);
-            return [...prevActions, fullActionData];
+            console.warn(
+              `Action definition "${finalActionData.name}" not found during edit. Adding as new.`
+            );
+            return [...prevActions, definitionToUpdate]; // Add new
           }
         });
       }
@@ -237,16 +300,15 @@ function FlowContent() {
     [getNode, definedActions, setDefinedActions, updateNode]
   );
 
-  // --- onSelectionChange, clearSelectionAndCloseSidebar, getCenterPosition (unchanged) ---
+  // --- Selection & UI ---
   const onSelectionChange = useCallback(({ nodes: selectedNodes }: OnSelectionChangeParams) => {
     const newSelectedNode = selectedNodes.length === 1 ? selectedNodes[0] : null;
+    const isConfigurable = newSelectedNode && isConfigurableNode(newSelectedNode);
     setSelectedNode(newSelectedNode);
     setIsFabMenuOpen(false);
-    // Close sidebar if no configurable node is selected
-    if (!newSelectedNode || !isConfigurableNode(newSelectedNode)) {
-      setIsSidebarOpen(false);
-    }
+    setIsSidebarOpen(!!isConfigurable);
   }, []);
+
   const clearSelectionAndCloseSidebar = useCallback(() => {
     setSelectedNode(null);
     setIsFabMenuOpen(false);
@@ -255,38 +317,59 @@ function FlowContent() {
   }, [rfSetNodes, getNodes]);
 
   const getCenterPosition = useCallback((): XYPosition => {
-    const fp = document.querySelector('.react-flow__pane');
-    if (fp) {
-      const b = fp.getBoundingClientRect();
-      return screenToFlowPosition({ x: b.width / 2 - 75, y: b.height / 4 });
+    const flowPane = document.querySelector('.react-flow__pane');
+    if (flowPane) {
+      const bounds = flowPane.getBoundingClientRect();
+      return screenToFlowPosition({ x: bounds.width / 2 - 100, y: bounds.height / 4 }); // Adjust offset
     }
-    return { x: 200 + Math.random() * 100, y: 100 + Math.random() * 100 };
+    return { x: 250 + Math.random() * 100, y: 150 + Math.random() * 100 };
   }, [screenToFlowPosition]);
 
-  // --- handleAddNode (Updated to allow multiple start nodes) ---
+  // --- Add Node (Updated for variations) ---
   const handleAddNode = useCallback(
     (type: 'intent' | 'action' | 'end' | 'start') => {
       const position = getCenterPosition();
       let newNodeData: any = {};
-
       if (type === 'start') {
-        // REMOVED the check for existing start node
-        newNodeData = { storyName: `New Story ${getId().slice(-4)}` };
+        newNodeData = {
+          storyName: `New Story`,
+          storyId: `story_${getId().slice(-4)}`,
+          label: `New Story`,
+        };
       } else if (type === 'intent') {
         const defaultIntent = intents[0] || {
-          id: 'intent_default',
-          label: 'Default Intent',
+          id: 'intent_new',
+          label: 'New Intent',
           examples: [],
+          entities: [],
         };
-        newNodeData = { intentId: defaultIntent.id, examples: defaultIntent.examples || [] };
+        newNodeData = {
+          intentId: defaultIntent.id,
+          examples: [...(defaultIntent.examples || [])],
+          entities: [...(defaultIntent.entities || [])],
+          label: defaultIntent.label,
+        };
       } else if (type === 'action') {
         const defaultAction = definedActions[0] || {
           title: 'New Action',
-          name: 'new_action',
-          value: 'Configure me...',
+          name: `action_new_${getId().slice(-4)}`,
           valueType: 'text',
+          variations: ['Configure me...'],
         };
-        newNodeData = { ...defaultAction };
+        // Important: Create a *copy* of the definition data for the node
+        newNodeData = {
+          title: defaultAction.title,
+          name: defaultAction.name,
+          valueType: defaultAction.valueType,
+          value:
+            defaultAction.valueType === 'function'
+              ? defaultAction.value
+              : defaultAction.variations?.[0],
+          variations:
+            defaultAction.valueType === 'text'
+              ? [...(defaultAction.variations || [''])]
+              : undefined,
+        };
       } else if (type === 'end') {
         newNodeData = {};
       }
@@ -295,201 +378,345 @@ function FlowContent() {
       addNodes(newNode);
       setIsFabMenuOpen(false);
     },
-    // Removed getNodes from dependency as it's not used here anymore for the check
     [addNodes, getCenterPosition, definedActions, intents]
   );
 
-  // --- Add/Define Callbacks (handleAddNewActionDefinition, handleAddNewIntentDefinition - unchanged) ---
-  const handleAddNewActionDefinition = useCallback(
-    (newAction: ActionDefinition) => {
-      setDefinedActions((prev) => [...prev, newAction]);
-      // console.log('Added new action definition:', newAction);
-    },
-    [setDefinedActions]
-  );
+  // --- Add Definitions (Updated for variations) ---
   const handleAddNewIntentDefinition = useCallback(
     (newIntent: IntentDefinition) => {
       setIntents((prev) => {
-        if (prev.some((intent) => intent.id === newIntent.id)) {
-          alert(`Intent ID "${newIntent.id}" already exists.`);
+        if (prev.some((i) => i.id === newIntent.id)) {
+          toast.error(`Intent ID "${newIntent.id}" exists.`);
           return prev;
         }
+        toast.success(`Intent "${newIntent.label}" defined.`);
         return [...prev, newIntent];
       });
-      // console.log('Added new intent definition:', newIntent);
     },
     [setIntents]
   );
-  const toggleFabMenu = useCallback(() => {
-    setIsFabMenuOpen((prev) => !prev);
-  }, []);
+  const handleAddNewActionDefinition = useCallback(
+    (newAction: ActionDefinition) => {
+      setDefinedActions((prev) => {
+        if (prev.some((a) => a.name === newAction.name)) {
+          toast.error(`Action Name "${newAction.name}" exists.`);
+          return prev;
+        }
+        toast.success(`Action "${newAction.title || newAction.name}" defined.`);
+        // Ensure correct structure based on type before adding
+        const completeAction = {
+          id: `action_${Date.now()}`,
+          ...newAction, // Spread incoming data (name, title, valueType)
+          value:
+            newAction.valueType === 'function'
+              ? newAction.value || ''
+              : newAction.variations?.[0] || '',
+          variations:
+            newAction.valueType === 'text'
+              ? newAction.variations && newAction.variations.length > 0
+                ? newAction.variations
+                : ['']
+              : undefined,
+        };
+        // Clean up potentially undefined fields if necessary (optional)
+        if (completeAction.valueType === 'text') delete completeAction.value; // Or keep first variation as value
+        if (completeAction.valueType === 'function') delete completeAction.variations;
 
-  // --- Export Flow Data (Unchanged - already handles multiple start nodes) ---
+        return [...prev, completeAction];
+      });
+    },
+    [setDefinedActions]
+  );
+
+  const toggleFabMenu = useCallback(() => setIsFabMenuOpen((prev) => !prev), []);
+
+  // --- Export Flow Data (Updated for variations) ---
   const exportFlowData = useCallback(async () => {
-    setLoading(true); // Set loading to true immediately when starting the process
-
+    setLoading(true);
     const allNodes = getNodes();
     const allEdges = getEdges();
 
-    // 1. Format Intents
-    const formattedIntents = intents.map((intent) => ({
-      name: intent.id,
-      examples: intent.examples || [],
-      entities: [],
+    // 1. Format Intents (Unchanged)
+    const formattedIntents = intents.map((i) => ({
+      name: i.id,
+      examples: i.examples || [],
+      entities: i.entities || [],
     }));
 
-    // 2. Format Actions
-    const formattedActions = definedActions.map((action) => {
-      let type: 'text' | 'action' | 'button' = 'text';
-      let value: any = undefined;
-      if (action.valueType === 'function' || action.name.startsWith('action_')) {
-        type = 'action';
-      } else if (action.name.startsWith('utter_')) {
-        if (action.valueType === 'text') {
-          try {
-            const parsedValue = JSON.parse(action.value);
-            if (
-              Array.isArray(parsedValue) &&
-              parsedValue.every(
-                (item) =>
-                  typeof item === 'object' && item !== null && 'title' in item && 'payload' in item
-              )
-            ) {
-              type = 'button';
-              value = parsedValue;
-            } else {
-              type = 'text';
-              value = action.value;
-            }
-          } catch (e) {
-            type = 'text';
-            value = action.value;
-          }
-        } else {
-          type = 'text';
-          value = action.value;
-        }
-      } else {
-        type = 'text';
-        value = action.value;
-      }
-      const formattedAction: any = { type, name: action.name };
-      if (value !== undefined && (type === 'text' || type === 'button')) {
-        formattedAction.value = value;
-      }
-      return formattedAction;
+    // Collect entities while formatting intents (optimization)
+    const entitiesSet = new Set();
+    intents.forEach((intent) => {
+      intent.entities?.forEach((entity) => entitiesSet.add(entity));
     });
 
-    // 3. Generate Stories (iterates through all start nodes)
-    const stories: { name: string; steps: StoryStep[] }[] = [];
+    // 2. Format Actions (Unchanged)
+    const formattedActions = definedActions.map((action) => {
+      if (action.valueType === 'function') {
+        return { type: 'action', name: action.name };
+      } else {
+        const value = action.variations && action.variations.length > 0 ? action.variations : [''];
+
+        // Check if the value looks like Rasa buttons JSON
+        let isButtonFormat = false;
+        if (
+          value.length === 1 &&
+          typeof value[0] === 'string' &&
+          value[0].trim().startsWith('[') &&
+          value[0].includes('"title"')
+        ) {
+          try {
+            const parsed = JSON.parse(value[0]);
+            isButtonFormat =
+              Array.isArray(parsed) &&
+              parsed.every(
+                (item) =>
+                  typeof item === 'object' && item !== null && 'title' in item && 'payload' in item
+              );
+            if (isButtonFormat) {
+              return { type: 'button', name: action.name, value: parsed };
+            }
+          } catch (e) {
+            /* Not JSON or not button format */
+          }
+        }
+
+        return { type: 'text', name: action.name, variations: value };
+      }
+    });
+
+    // 3. Generate Stories using Topological Sort
+    const stories = [];
+
+    // Create efficient lookup maps
+    const nodeMap = Object.fromEntries(allNodes.map((node) => [node.id, node]));
+    const outgoingEdges = {};
+    const incomingEdges = {};
+
+    // Initialize edge tracking
+    allNodes.forEach((node) => {
+      outgoingEdges[node.id] = [];
+      incomingEdges[node.id] = [];
+    });
+
+    // Populate edge maps
+    allEdges.forEach((edge) => {
+      outgoingEdges[edge.source].push(edge);
+      incomingEdges[edge.target].push(edge);
+    });
+
+    // Find start nodes
     const startNodes = allNodes.filter((node) => node.type === 'start');
     if (startNodes.length === 0) {
       console.warn('No Start Nodes found.');
+      toast.warn('No Start Nodes found.');
+      setLoading(false);
+      return;
     }
 
+    // Process each story from start to end using topological ordering
     startNodes.forEach((startNode) => {
-      const storyId = startNode.data?.storyId || `Story_${startNode.id}`;
-      const steps: StoryStep[] = [];
-      const visitedInPath = new Set<string>();
-      let currentNodeId: string | null = startNode.id;
-      while (currentNodeId) {
-        if (visitedInPath.has(currentNodeId)) {
-          console.warn(`Loop detected in story '${storyId}' at ${currentNodeId}.`);
-          break;
+      const storyName = startNode.data?.storyId || `Generated_Story_${startNode.id}`;
+
+      // Perform topological sort from this start node
+      const visited = new Set();
+      const path = []; // Will store nodes in topological order
+      const onStack = new Set(); // For cycle detection
+      let hasCycle = false;
+
+      function dfs(nodeId) {
+        if (hasCycle || nodeMap[nodeId].type === 'end') {
+          return;
         }
-        visitedInPath.add(currentNodeId);
-        const currentNode = allNodes.find((n) => n.id === currentNodeId);
-        if (!currentNode) break;
-        const outgoingEdge = allEdges.find((edge) => edge.source === currentNodeId);
-        if (!outgoingEdge) break;
-        const nextNodeId = outgoingEdge.target;
-        const nextNode = allNodes.find((n) => n.id === nextNodeId);
-        if (!nextNode || nextNode.type === 'end') break;
-        if (nextNode.type === 'intent' && nextNode.data?.intentId) {
-          steps.push({ node: 'intent', name: nextNode.data.intentId });
-        } else if (nextNode.type === 'action' && nextNode.data?.name) {
-          steps.push({ node: 'action', name: nextNode.data.name });
-        } else {
-          console.warn(`Skipping unsupported node type '${nextNode.type}' in story '${storyId}'.`);
+
+        visited.add(nodeId);
+        onStack.add(nodeId);
+
+        for (const edge of outgoingEdges[nodeId] || []) {
+          const nextId = edge.target;
+
+          if (!visited.has(nextId)) {
+            dfs(nextId);
+          } else if (onStack.has(nextId)) {
+            // Cycle detected
+            hasCycle = true;
+            console.warn(`Loop detected in story '${storyName}' at ${nextId}.`);
+            toast.warn(`Loop in story '${storyName}'.`);
+            return;
+          }
         }
-        currentNodeId = nextNodeId;
+
+        onStack.delete(nodeId);
+        path.unshift(nodeId); // Add to front for reverse topological order
       }
-      stories.push({ name: storyId, steps });
+
+      // Start DFS from the start node
+      dfs(startNode.id);
+
+      if (hasCycle) {
+        return; // Skip this story due to cycle
+      }
+
+      // Convert topological order to story steps (skip start node)
+      const steps = [];
+
+      for (let i = 0; i < path.length; i++) {
+        const nodeId = path[i];
+        const node = nodeMap[nodeId];
+
+        // Skip start nodes in the steps
+        if (node.type === 'start') {
+          continue;
+        }
+
+        // Skip end nodes in the steps
+        if (node.type === 'end') {
+          continue;
+        }
+
+        if (node.type === 'intent' && node.data?.intentId) {
+          steps.push({ node: 'intent', name: node.data.intentId });
+        } else if (node.type === 'action' && node.data?.name) {
+          steps.push({ node: 'action', name: node.data.name });
+        }
+      }
+
+      if (steps.length > 0) {
+        stories.push({ name: storyName, steps });
+      } else {
+        console.warn(`Story '${storyName}' has no steps.`);
+      }
     });
 
+    // Format entities
+    const formattedEntities = Array.from(entitiesSet).map((name) => ({
+      name,
+    }));
+
     // 4. Assemble Final JSON
-    const exportData = { intents: formattedIntents, actions: formattedActions, stories: stories };
+    const exportData = {
+      intents: formattedIntents,
+      actions: formattedActions,
+      entities: formattedEntities,
+      stories: stories,
+    };
+    console.log('Export Data Payload:', JSON.stringify(exportData, null, 2));
 
-    console.log('Exported Data:', JSON.stringify(exportData, null, 2));
+    // 5. Send to Backend API
+    if (stories.length === 0) {
+      toast.error('No valid stories generated.');
+      setLoading(false);
+      return;
+    }
 
-    // Use `toast.promise` to show loading and handle success/failure
-    await toast
-      .promise(
+    try {
+      await toast.promise(
         fetch(`${import.meta.env.VITE_BACKEND_BASE_URL}/train`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(exportData),
         })
           .then((response) => {
             if (!response.ok) {
+              setIsTrained(false);
               throw new Error('Failed to send data to the API');
             }
             return response.json();
           })
           .then((data) => {
             console.log('✅ API response:', data);
+            setIsTrained(true);
             return data;
           })
           .catch((error) => {
+            setIsTrained(false);
             console.error('❌ Error sending data to API:', error);
             throw error;
           }),
         {
-          pending: 'Building Bot...',
-          success: 'Bot Builded Successfully!',
-          error: 'Failed to Build Bot',
-        },
-        { autoClose: 2000 }
-      )
-      .finally(() => {
-        setLoading(false);
-      });
-  }, [intents, definedActions, getNodes, getEdges]);
+          pending: 'Training model...',
+          success: 'Model training started!',
+          error: {
+            render({ data }) {
+              console.log('Training Error:', data);
 
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (fabRef.current && !fabRef.current.contains(event.target as Node)) {
-        setIsFabMenuOpen(false);
-      }
-    };
-    if (isFabMenuOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-    } else {
-      document.removeEventListener('mousedown', handleClickOutside);
+              return `Training failed: ${data?.message || 'Unknown error'}`;
+            },
+          },
+        },
+        { autoClose: 3000 }
+      );
+    } catch (error) {
+      console.error('Export Error:', error);
+    } finally {
+      setLoading(false);
     }
+  }, [intents, definedActions, getNodes, getEdges, setLoading]);
+  // --- useEffects & Chatbot ---
+  useEffect(() => {
+    // Click outside FAB
+    const handleClickOutside = (e: MouseEvent) => {
+      if (fabRef.current && !fabRef.current.contains(e.target as Node)) setIsFabMenuOpen(false);
+    };
+    if (isFabMenuOpen) document.addEventListener('mousedown', handleClickOutside);
+    else document.removeEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isFabMenuOpen]);
 
-  const saveNodesToLocalStorage = useDebouncedCallback((nodes) => {
-    localStorage.setItem('nodes', JSON.stringify(nodes));
-    console.log('Saving nodes to localStorage:', nodes);
+  const saveNodesToLocalStorage = useDebouncedCallback((nodesToSave: Node[]) => {
+    try {
+      localStorage.setItem('nodes', JSON.stringify(nodesToSave.map((n) => ({ ...n }))));
+      console.log('Saved nodes:', nodesToSave.length);
+    } catch (e) {
+      console.error('LS Node Save Error:', e);
+    }
   }, 1000);
   useEffect(() => {
-    saveNodesToLocalStorage(nodes);
+    if (nodes.length > 0) saveNodesToLocalStorage(nodes);
   }, [nodes, saveNodesToLocalStorage]);
 
-  // Debounced function for edges
-  const saveEdgesToLocalStorage = useDebouncedCallback((edges) => {
-    localStorage.setItem('edges', JSON.stringify(edges));
-    console.log('Saving edges to localStorage:', edges);
+  const saveEdgesToLocalStorage = useDebouncedCallback((edgesToSave: Edge[]) => {
+    try {
+      localStorage.setItem('edges', JSON.stringify(edgesToSave.map((e) => ({ ...e }))));
+      console.log('Saved edges:', edgesToSave.length);
+    } catch (e) {
+      console.error('LS Edge Save Error:', e);
+    }
   }, 1000);
   useEffect(() => {
-    saveEdgesToLocalStorage(edges);
+    if (edges.length > 0) saveEdgesToLocalStorage(edges);
   }, [edges, saveEdgesToLocalStorage]);
 
-  // --- Animation Variants (unchanged) ---
+  const handleNewMessage = (message: string) => {
+    setMessages((prevMessages) => [...prevMessages, message]);
+  };
+  const onBotResponse = (response: string) => {
+    const botMessage = { role: 'assistant', content: response };
+    setMessages((prevMessages) => [...prevMessages, botMessage]);
+  };
+  // const callPredictApi = useCallback(async (message: string): Promise<string> => {
+  //   try {
+  //     const response = await fetch(`${import.meta.env.VITE_BACKEND_BASE_URL}/predict`, {
+  //       method: 'POST',
+  //       headers: { 'Content-Type': 'application/json' },
+  //       body: JSON.stringify({
+  //         text: message,
+  //         model_name: 'default_model.tar.gz',
+  //         sender_id: 'user_flow_tester',
+  //       }),
+  //     });
+  //     if (!response.ok) {
+  //       const err = await response.json().catch(() => ({}));
+  //       throw new Error(err.message || `Predict Error ${response.status}`);
+  //     }
+  //     const data = await response.json();
+  //     return data.response?.[0]?.text || 'Sorry, unexpected response.';
+  //   } catch (error) {
+  //     console.error('Predict API Error:', error);
+  //     return error instanceof Error ? error.message : 'Sorry, request failed.';
+  //   }
+  // }, []);
+
+  // --- Animation Variants ---
   const fabMenuVariants = {
     hidden: { opacity: 0, y: 20, transition: { staggerChildren: 0.05, staggerDirection: -1 } },
     visible: { opacity: 1, y: 0, transition: { staggerChildren: 0.07, delayChildren: 0.1 } },
@@ -504,22 +731,8 @@ function FlowContent() {
     visible: { opacity: 1, y: 0, scale: 1 },
     exit: { opacity: 0, y: 10, scale: 0.9, transition: { duration: 0.1 } },
   };
-  const sidebarVariants = {
-    hidden: { x: '100%', opacity: 0 },
-    visible: { x: 0, opacity: 1, transition: { type: 'tween', duration: 0.3, ease: 'easeOut' } },
-    exit: { x: '100%', opacity: 0, transition: { type: 'tween', duration: 0.2, ease: 'easeIn' } },
-  };
 
-  // chatbot things.........................................................
-  const handleNewMessage = (message: string) => {
-    setMessages((prevMessages) => [...prevMessages, message]);
-  };
-  const onBotResponse = (response: string) => {
-    const botMessage = { role: 'assistant', content: response };
-    setMessages((prevMessages) => [...prevMessages, botMessage]);
-  };
-
-  // --- Render (unchanged) ---
+  // --- Render ---
   return (
     <div className="h-screen w-screen flex overflow-hidden bg-gray-50">
       <div className="flex-grow h-full relative">
@@ -536,34 +749,37 @@ function FlowContent() {
           fitView
           className="bg-gradient-to-br from-indigo-50 via-white to-blue-50"
           deleteKeyCode={['Backspace', 'Delete']}
-          nodesDraggable={true}
-          nodesConnectable={true}
-          elementsSelectable={true}
         >
           <Controls /> <Background />
         </ReactFlow>
+
+        {/* Top Right Buttons */}
         <div className="absolute top-4 right-6 z-10 flex gap-3">
+          {' '}
           {isLoading ? (
             <motion.button
-              className="flex items-center text-center gap-1 justify-center px-4 py-2 bg-blue-600/70 text-white rounded-md shadow-md  text-sm font-medium"
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              disabled
+              className="btn btn-sm btn-disabled gap-1"
+              initial={{ opacity: 0.5 }}
+              animate={{ opacity: [0.5, 1, 0.5] }}
+              transition={{ duration: 1.5, repeat: Infinity }}
             >
-              Building Bot... <Bot />
+              {' '}
+              Training... <Bot size={16} className="animate-spin" />{' '}
             </motion.button>
           ) : (
             <motion.button
               onClick={exportFlowData}
-              className="flex items-center text-center gap-1 justify-center px-4 py-2 bg-blue-600 text-white rounded-md shadow-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors duration-200 ease-in-out text-sm font-medium"
+              className="btn btn-sm btn-primary gap-1"
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
             >
-              Build Bot <Bot />
+              {' '}
+              Train Model <Bot size={16} />{' '}
             </motion.button>
-          )}
+          )}{' '}
         </div>
 
+        {/* Configure Button */}
         <AnimatePresence>
           {' '}
           {selectedNode && isConfigurableNode(selectedNode) && !isSidebarOpen && (
@@ -576,10 +792,8 @@ function FlowContent() {
             >
               {' '}
               <motion.button
-                onClick={() => {
-                  setIsSidebarOpen(true);
-                }}
-                className="flex items-center justify-center w-14 h-14 bg-gray-700 text-white rounded-full shadow-xl hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition-colors duration-200 ease-in-out"
+                onClick={() => setIsSidebarOpen(true)}
+                className="btn btn-circle btn-neutral shadow-xl"
                 title="Configure Node"
                 whileHover={{ scale: 1.1, rotate: 15 }}
                 whileTap={{ scale: 0.9 }}
@@ -590,6 +804,8 @@ function FlowContent() {
             </motion.div>
           )}{' '}
         </AnimatePresence>
+
+        {/* FAB */}
         <div ref={fabRef} className="absolute bottom-6 right-6 z-20">
           {' '}
           <AnimatePresence>
@@ -604,20 +820,19 @@ function FlowContent() {
               >
                 {' '}
                 {[
-                  { type: 'start', Icon: PlayCircle, color: 'purple', title: 'Add Start Node' },
-                  { type: 'intent', Icon: Bot, color: 'blue', title: 'Add Intent Node' },
-                  { type: 'action', Icon: Zap, color: 'green', title: 'Add Action Node' },
-                  { type: 'end', Icon: FlagOff, color: 'red', title: 'Add End Node' },
+                  { type: 'start', Icon: PlayCircle, color: 'purple', title: 'Add Start' },
+                  { type: 'intent', Icon: Bot, color: 'blue', title: 'Add Intent' },
+                  { type: 'action', Icon: Zap, color: 'green', title: 'Add Action' },
+                  { type: 'end', Icon: FlagOff, color: 'red', title: 'Add End' },
                 ].map((nodeInfo) => {
-                  const bgColor = colorClasses[nodeInfo.color]?.bg || colorClasses['gray'].bg;
-                  const hoverBgColor =
-                    colorClasses[nodeInfo.color]?.hoverBg || colorClasses['gray'].hoverBg;
+                  const bg = colorClasses[nodeInfo.color]?.bg || 'bg-gray-500';
+                  const hoverBg = colorClasses[nodeInfo.color]?.hoverBg || 'hover:bg-gray-600';
                   return (
                     <motion.button
                       key={nodeInfo.type}
                       variants={fabItemVariants}
                       onClick={() => handleAddNode(nodeInfo.type as any)}
-                      className={`flex items-center justify-center w-12 h-12 ${bgColor} text-white rounded-full shadow-lg ${hoverBgColor} transition-colors duration-200 ease-in-out transform hover:scale-110`}
+                      className={`btn btn-circle btn-sm ${bg} text-white shadow-lg ${hoverBg} transform hover:scale-110`}
                       title={nodeInfo.title}
                     >
                       {' '}
@@ -630,69 +845,65 @@ function FlowContent() {
           </AnimatePresence>{' '}
           <motion.button
             onClick={toggleFabMenu}
-            className="flex items-center justify-center w-14 h-14 bg-indigo-600 text-white rounded-full shadow-xl hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-all duration-200 ease-in-out"
+            className="btn btn-circle btn-primary shadow-xl"
             title={isFabMenuOpen ? 'Close Menu' : 'Add Node'}
             whileHover={{ scale: 1.1 }}
             whileTap={{ scale: 0.95 }}
-            animate={{ rotate: isFabMenuOpen ? 135 : 0 }}
+            animate={{ rotate: isFabMenuOpen ? 45 : 0 }}
             transition={{ type: 'spring', stiffness: 350, damping: 15 }}
           >
             {' '}
             <Plus size={28} />{' '}
           </motion.button>{' '}
         </div>
-        <Suspense fallback={<div>Loading...</div>}>
-          <ChatBotWidget
-            callApi={async (message) => {
-              const data = await fetch(`${import.meta.env.VITE_BACKEND_BASE_URL}/predict`, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                  text: message,
-                  sender_id: 'user1',
-                  model_name: 'default_model.tar.gz',
-                }),
-              });
-              // console.log('API response:', data);
+        {isTrained ? (
+          <Suspense fallback={<div>Loading...</div>}>
+            <ChatBotWidget
+              callApi={async (message) => {
+                const data = await fetch(`${import.meta.env.VITE_BACKEND_BASE_URL}/predict`, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({
+                    text: message,
+                    sender_id: 'user1',
+                    model_name: 'default_model.tar.gz',
+                  }),
+                });
+                // console.log('API response:', data);
 
-              const res = await data.json();
-              return res.response[0].text;
-            }}
-            handleNewMessage={handleNewMessage}
-            onBotResponse={onBotResponse}
-            messages={messages}
-            primaryColor="#4F46E5"
-          />
-        </Suspense>
+                const res = await data.json();
+                return res.response[0].text;
+              }}
+              handleNewMessage={handleNewMessage}
+              onBotResponse={onBotResponse}
+              messages={messages}
+              primaryColor="#4F46E5"
+            />
+          </Suspense>
+        ) : null}
       </div>
-      <AnimatePresence>
-        {' '}
-        {isSidebarOpen && selectedNode && (
-          <motion.div
-            key={selectedNode ? 'sidebar-visible' : 'sidebar-hidden'}
-            variants={sidebarVariants}
-            initial="hidden"
-            animate="visible"
-            exit="exit"
-            className="w-72 h-full flex-shrink-0 bg-white shadow-lg border-l border-gray-200 flex flex-col"
-          >
-            {' '}
-            <Sidebar
-              selectedNode={selectedNode}
-              intents={intents}
-              definedActions={definedActions}
-              onUpdateStartNode={updateStartNode}
-              onUpdateIntent={updateIntentNode}
-              onUpdateAction={updateActionNode}
-              onAddNewIntentDefinition={handleAddNewIntentDefinition}
-              onAddNewActionDefinition={handleAddNewActionDefinition}
-              onClose={clearSelectionAndCloseSidebar}
-            />{' '}
-          </motion.div>
-        )}{' '}
-      </AnimatePresence>
+
+      {/* Sidebar (No Animation Wrapper) */}
+      {isSidebarOpen && selectedNode && isConfigurableNode(selectedNode) && (
+        <div
+          key={selectedNode.id}
+          className="w-80 h-full flex-shrink-0 bg-white shadow-lg border-l border-gray-200 flex flex-col"
+        >
+          <Sidebar
+            selectedNode={selectedNode}
+            intents={intents}
+            definedActions={definedActions}
+            onUpdateStartNode={updateStartNode}
+            onUpdateIntent={updateIntentNode}
+            onUpdateAction={updateActionNode}
+            onAddNewIntentDefinition={handleAddNewIntentDefinition}
+            onAddNewActionDefinition={handleAddNewActionDefinition}
+            onClose={clearSelectionAndCloseSidebar}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -700,12 +911,39 @@ function FlowContent() {
 function Flow() {
   return (
     <ReactFlowProvider>
-      <FlowContent />
+      {' '}
+      <FlowContent />{' '}
     </ReactFlowProvider>
   );
 }
 
 export default Flow;
+
+// Helper CSS classes used in Sidebar/Flow (can be in index.css or here)
+const css = `
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; padding: 0.5rem 1rem; border-radius: 0.375rem; border: 1px solid transparent; font-weight: 600; transition: background-color 0.2s; cursor: pointer; }
+.btn-sm { padding: 0.25rem 0.75rem; font-size: 0.875rem; }
+.btn-xs { padding: 0.1rem 0.5rem; font-size: 0.75rem; }
+.btn-circle { border-radius: 9999px; width: 3.5rem; height: 3.5rem; padding: 0; } /* Adjusted size for FAB */
+.btn-primary { background-color: #4f46e5; color: white; } .btn-primary:hover { background-color: #4338ca; } .btn-primary:disabled { background-color: #a5b4fc; cursor: not-allowed; }
+.btn-secondary { background-color: #e5e7eb; color: #374151; border-color: #d1d5db; } .btn-secondary:hover { background-color: #d1d5db; }
+.btn-neutral { background-color: #404040; color: white; } .btn-neutral:hover { background-color: #262626; }
+.btn-ghost { background-color: transparent; border: none; } .btn-ghost:hover { background-color: rgba(0,0,0,0.05); }
+.btn-disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-toggle { background-color: white; border: 1px solid #d1d5db; color: #4b5563; } .btn-toggle:hover { background-color: #f9fafb; }
+.btn-toggle.active { background-color: #eff6ff; border-color: #93c5fd; color: #2563eb; font-weight: 600; }
+
+.input, .textarea, .select { display: block; width: 100%; border-radius: 0.375rem; border: 1px solid #d1d5db; padding: 0.5rem 0.75rem; font-size: 0.875rem; line-height: 1.25rem; box-shadow: inset 0 1px 2px 0 rgb(0 0 0 / 0.05); }
+.input:focus, .textarea:focus, .select:focus { outline: 2px solid transparent; outline-offset: 2px; border-color: #60a5fa; box-shadow: 0 0 0 2px #bfdbfe; }
+.input-sm, .textarea-sm, .select-sm { padding-top: 0.25rem; padding-bottom: 0.25rem; font-size: 0.875rem; line-height: 1.25rem; }
+.textarea-xs { font-size: 0.75rem; line-height: 1rem; padding: 0.25rem 0.5rem; }
+.input-bordered, .textarea-bordered, .select-bordered { /* Add specific border styles if needed */ }
+`;
+// Inject styles (consider moving to index.css)
+const styleSheet = document.createElement('style');
+styleSheet.type = 'text/css';
+styleSheet.innerText = css;
+document.head.appendChild(styleSheet);
 
 
 ./src/components/ChatBotWidget/ChatBotWidget.tsx
@@ -1317,6 +1555,9 @@ import {
   AlertTriangle,
   Search,
   ChevronLeft,
+  Tag, // Icon for entities
+  MessageSquarePlus, // Icon for variations
+  Trash2, // Icon for deleting variations
 } from 'lucide-react';
 import {
   ActionDefinition,
@@ -1325,16 +1566,20 @@ import {
   IntentNodeData,
   ActionNodeData,
 } from '../types';
-import { mockAvailableFunctions } from '../data/mockData'; // mockIntents are now passed as props
+import { mockAvailableFunctions } from '../data/mockData'; // Functions remain the same
+import { parseEntitiesFromExamples } from '../utils/entityParser'; // Import parser
+import { toast } from 'react-toastify'; // Import toast
 
 interface SidebarProps {
   selectedNode: Node<StartNodeData | IntentNodeData | ActionNodeData | any> | null;
-  intents: IntentDefinition[];
-  definedActions: ActionDefinition[];
-  onUpdateStartNode: (nodeId: string, newStoryName: string) => void;
+  intents: IntentDefinition[]; // Now includes entities
+  definedActions: ActionDefinition[]; // Now includes variations
+  onUpdateStartNode: (nodeId: string, newStoryName: string, storyId?: string) => void;
   onUpdateIntent: (nodeId: string, newIntentId: string, examples?: string[]) => void;
+  // Update signature to potentially receive variations
   onUpdateAction: (nodeId: string, actionData: Partial<ActionNodeData>) => void;
   onAddNewIntentDefinition: (newIntent: IntentDefinition) => void;
+  // Update signature to potentially receive variations
   onAddNewActionDefinition: (newAction: ActionDefinition) => void;
   onClose: () => void;
 }
@@ -1364,6 +1609,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [currentValueInputType, setCurrentValueInputType] = useState<ValueInputType>('text');
   const [currentIntentId, setCurrentIntentId] = useState<string>('');
   const [currentExamples, setCurrentExamples] = useState<string[]>([]);
+  // State for Action Text Variations (Edit Mode)
+  const [currentVariations, setCurrentVariations] = useState<string[]>(['']); // Start with one empty
 
   // State for Dialogs
   const [showIntentDialog, setShowIntentDialog] = useState(false);
@@ -1373,22 +1620,20 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [showActionDialog, setShowActionDialog] = useState(false);
   const [newActionTitle, setNewActionTitle] = useState('');
   const [newActionName, setNewActionName] = useState('');
-  const [newActionValue, setNewActionValue] = useState('');
   const [newActionValueType, setNewActionValueType] = useState<ValueInputType>('text');
+  // State for Variations in New Action Dialog
+  const [newActionVariations, setNewActionVariations] = useState<string[]>(['']);
+  const [newActionFunctionValue, setNewActionFunctionValue] = useState<string>(''); // Separate state for function value
+
 
   // --- Effects ---
   useEffect(() => {
-    // Reset internal state only when the selected node *identity* changes.
     if (selectedNode) {
-      console.log(
-        'Sidebar useEffect [selectedNode changed]: Resetting mode/state. New Node ID:',
-        selectedNode?.id
-      );
+      console.log('Sidebar useEffect [selectedNode changed]: Resetting mode/state.', selectedNode.id, selectedNode.type);
       setMode('view');
       setIsChangingDefinition(false);
       setSearchTerm('');
 
-      // Initialize edit state based on the new node's data
       const nodeData = selectedNode.data || {};
       if (selectedNode.type === 'start') {
         setCurrentStoryName(nodeData.storyName || '');
@@ -1397,26 +1642,30 @@ const Sidebar: React.FC<SidebarProps> = ({
         setCurrentIntentId(nodeData.intentId || '');
         setCurrentExamples(Array.isArray(nodeData.examples) ? [...nodeData.examples] : []);
       } else if (selectedNode.type === 'action') {
+        const type = nodeData.valueType || 'text';
+        setCurrentValueInputType(type);
+        // Initialize variations state specifically based on type and data
+        const initialVariations = type === 'text' ? (Array.isArray(nodeData.variations) && nodeData.variations.length > 0 ? [...nodeData.variations] : ['']) : [''];
+        setCurrentVariations(initialVariations);
+        // Set basic config, deriving value/variations based on type
         setCurrentActionConfig({
-          title: nodeData.title || nodeData.name || '',
-          name: nodeData.name || '',
-          value: nodeData.value || '',
-          valueType: nodeData.valueType || 'text',
+            title: nodeData.title || nodeData.name || '',
+            name: nodeData.name || '',
+            valueType: type,
+            value: type === 'function' ? nodeData.value || '' : initialVariations[0] || '', // Use first variation or func value
+            variations: type === 'text' ? initialVariations : undefined,
         });
-        setCurrentValueInputType(nodeData.valueType || 'text');
+      } else {
+         // Reset for other types
+        setCurrentStoryName(''); setCurrentStoryId(''); setCurrentIntentId(''); setCurrentExamples([]); setCurrentActionConfig({}); setCurrentValueInputType('text'); setCurrentVariations(['']);
       }
     } else {
       // Clear everything if no node is selected
-      setCurrentStoryName('');
-      setCurrentIntentId('');
-      setCurrentExamples([]);
-      setCurrentActionConfig({});
-      setCurrentValueInputType('text');
-      setMode('view');
-      setIsChangingDefinition(false);
-      setSearchTerm('');
+       console.log('Sidebar useEffect [no selected node]: Clearing state.');
+       setCurrentStoryName(''); setCurrentStoryId(''); setCurrentIntentId(''); setCurrentExamples([]); setCurrentActionConfig({}); setCurrentValueInputType('text'); setCurrentVariations(['']);
+       setMode('view'); setIsChangingDefinition(false); setSearchTerm('');
     }
-  }, [selectedNode]); // Dependency array only includes selectedNode
+  }, [selectedNode]); // Dependency only on selectedNode identity
 
   // --- Event Handlers ---
   const handleSetMode = useCallback(
@@ -1424,221 +1673,306 @@ const Sidebar: React.FC<SidebarProps> = ({
       setMode(newMode);
       setIsChangingDefinition(false);
       setSearchTerm('');
-      // Re-initialize edit state IF switching TO edit mode
-      if (newMode === 'edit' && selectedNode) {
+      // Re-initialize edit state ONLY IF switching TO edit mode FROM view mode
+      if (newMode === 'edit' && mode === 'view' && selectedNode) {
         console.log('Switching to Edit Mode, re-initializing edit state.');
         const nodeData = selectedNode.data || {};
         if (selectedNode.type === 'start') {
           setCurrentStoryName(nodeData.storyName || '');
+           setCurrentStoryId(nodeData.storyId || '');
         } else if (selectedNode.type === 'intent') {
           setCurrentIntentId(nodeData.intentId || '');
           setCurrentExamples(Array.isArray(nodeData.examples) ? [...nodeData.examples] : []);
         } else if (selectedNode.type === 'action') {
-          setCurrentActionConfig({
-            title: nodeData.title || nodeData.name || '',
-            name: nodeData.name || '',
-            value: nodeData.value || '',
-            valueType: nodeData.valueType || 'text',
-          });
-          setCurrentValueInputType(nodeData.valueType || 'text');
+           const type = nodeData.valueType || 'text';
+           setCurrentValueInputType(type);
+            const initialVariations = type === 'text' ? (Array.isArray(nodeData.variations) && nodeData.variations.length > 0 ? [...nodeData.variations] : ['']) : [''];
+           setCurrentVariations(initialVariations);
+           setCurrentActionConfig({
+                title: nodeData.title || nodeData.name || '',
+                name: nodeData.name || '',
+                valueType: type,
+                value: type === 'function' ? nodeData.value || '' : initialVariations[0] || '',
+                variations: type === 'text' ? initialVariations : undefined,
+            });
         }
       }
     },
-    [selectedNode]
+    [selectedNode, mode]
   );
 
-  // --- Start Node Handlers ---
-  const handleStoryNameChange = useCallback((newName: string) => {
-    setCurrentStoryName(newName);
-  }, []);
-  const handleStoryIdChange = useCallback((newId: string) => {
-    setCurrentStoryId(newId);
-  }, []);
+  // --- Start Node Handlers (Unchanged) ---
+  const handleStoryNameChange = useCallback((newName: string) => setCurrentStoryName(newName), []);
+  const handleStoryIdChange = useCallback((newId: string) => setCurrentStoryId(newId.trim().replace(/\s+/g, '_').toLowerCase()), []);
   const handleStartNodeEditSave = useCallback(() => {
     if (selectedNode?.type === 'start') {
-      onUpdateStartNode(selectedNode.id, currentStoryName.trim() || 'Default Start Story');
+      const finalName = currentStoryName.trim() || `Story_${selectedNode.id.slice(-4)}`;
+      const finalId = currentStoryId.trim() || `story_${selectedNode.id.slice(-4)}`;
+      onUpdateStartNode(selectedNode.id, finalName, finalId);
       handleSetMode('view');
     }
-  }, [selectedNode, onUpdateStartNode, currentStoryName, handleSetMode]);
+  }, [selectedNode, onUpdateStartNode, currentStoryName, currentStoryId, handleSetMode]);
 
-  // --- Intent Node Handlers (Edit Mode) ---
-  const handleIntentIdEditChange = useCallback(
-    (newId: string) => {
+  // --- Intent Node Handlers (Unchanged) ---
+  const handleIntentIdEditChange = useCallback((newId: string) => {
       setCurrentIntentId(newId);
-      const def = intents.find((i) => i.id === newId);
-      setCurrentExamples(def?.examples ? [...def.examples] : []);
-    },
-    [intents]
-  );
+      const definition = intents.find((i) => i.id === newId);
+      setCurrentExamples(definition?.examples ? [...definition.examples] : []);
+  }, [intents]);
   const handleExampleChange = useCallback((index: number, value: string) => {
-    setCurrentExamples((prev) => {
-      const copy = [...prev];
-      copy[index] = value;
-      return copy;
-    });
+      setCurrentExamples((prev) => { const copy = [...prev]; copy[index] = value; return copy; });
   }, []);
   const handleAddExampleInput = useCallback(() => setCurrentExamples((prev) => [...prev, '']), []);
   const handleRemoveExampleInput = useCallback((index: number) => {
-    setCurrentExamples((prev) => prev.filter((_, i) => i !== index));
+      setCurrentExamples((prev) => prev.length > 1 ? prev.filter((_, i) => i !== index) : ['']);
   }, []);
   const handleIntentEditSave = useCallback(() => {
     if (selectedNode?.type === 'intent') {
-      const finalId = currentIntentId.trim();
-      if (!finalId) {
-        alert('Intent ID empty.');
-        return;
-      }
-      const finalEx = currentExamples.map((e) => e.trim()).filter((e) => e);
-      onUpdateIntent(selectedNode.id, finalId, finalEx);
+      const finalIntentId = currentIntentId.trim();
+      if (!finalIntentId) { toast.error('Intent ID cannot be empty.'); return; }
+      const finalExamples = currentExamples.map((e) => e.trim()).filter((e) => e);
+      onUpdateIntent(selectedNode.id, finalIntentId, finalExamples);
       handleSetMode('view');
     }
   }, [selectedNode, onUpdateIntent, currentIntentId, currentExamples, handleSetMode]);
 
-  // --- Action Node Handlers (Edit Mode) ---
-  const handleActionConfigChange = useCallback(
-    (field: keyof ActionNodeData, value: string | ValueInputType) => {
+
+  // --- Action Node Handlers (Edit Mode - Updated for Variations) ---
+   const handleActionConfigChange = useCallback(
+    // Now explicitly handles 'functionValue' separately from 'value'
+    (field: keyof ActionNodeData | 'functionValue', value: string | ValueInputType) => {
       setCurrentActionConfig((prev) => {
-        const newState = { ...prev, [field]: value };
-        if (field === 'name' && (!newState.title || newState.title === prev.name)) {
-          newState.title = value as string;
+        const newState = { ...prev };
+
+        if (field === 'title') {
+            newState.title = value as string;
+        } else if (field === 'name') {
+            const newName = (value as string).trim().replace(/\s+/g, '_').toLowerCase();
+            if (!newState.title || newState.title === prev.name) {
+                newState.title = newName; // Auto-update title
+            }
+            newState.name = newName;
+        } else if (field === 'valueType') {
+            const newType = value as ValueInputType;
+            newState.valueType = newType;
+            setCurrentValueInputType(newType); // Update separate tracker
+            if (newType === 'function') {
+                newState.value = prev.value && mockAvailableFunctions.some(f=>f.name === prev.value) ? prev.value : (mockAvailableFunctions[0]?.name || ''); // Keep old func value if valid, else default
+                setCurrentVariations(['']); // Reset variations state
+                newState.variations = undefined;
+            } else { // Switching to text
+                newState.value = currentVariations[0] || ''; // Use first current variation
+                newState.variations = [...currentVariations]; // Assign current variations
+            }
+        } else if (field === 'functionValue' && newState.valueType === 'function') {
+             newState.value = value as string; // Update function value
         }
+        // Note: 'variations' array itself is updated via setCurrentVariations
+        // 'value' for text type will be updated based on variations on save
+
         return newState;
       });
     },
-    []
+    [currentVariations] // Depend on currentVariations for switching to text type
   );
-  const handleValueTypeToggle = useCallback((type: ValueInputType) => {
-    setCurrentValueInputType(type);
-    const newVal = type === 'function' ? mockAvailableFunctions[0]?.name || '' : '';
-    setCurrentActionConfig((prev) => ({ ...prev, value: newVal, valueType: type }));
-  }, []);
+
+   // Handler specifically for the value type toggle buttons
+   const handleValueTypeToggle = useCallback((type: ValueInputType) => {
+      handleActionConfigChange('valueType', type);
+   }, [handleActionConfigChange]);
+
+   // Handlers for Variations array in Edit mode
+   const handleVariationChange = useCallback((index: number, value: string) => {
+       setCurrentVariations(prev => {
+           const copy = [...prev];
+           copy[index] = value;
+           return copy;
+       });
+   }, []);
+
+   const handleAddVariationInput = useCallback(() => {
+       setCurrentVariations(prev => [...prev, '']);
+   }, []);
+
+   const handleRemoveVariationInput = useCallback((index: number) => {
+       setCurrentVariations(prev => {
+           if (prev.length <= 1) return ['']; // Keep at least one empty input
+           return prev.filter((_, i) => i !== index);
+       });
+   }, []);
+
+  // Save handler updated for variations
   const handleActionEditSave = useCallback(() => {
     if (selectedNode?.type === 'action') {
       const finalName = currentActionConfig.name?.trim();
-      if (!finalName) {
-        alert('Action Name required.');
-        return;
+      if (!finalName) { toast.error('Action Name (ID) is required.'); return; }
+
+      const finalTitle = currentActionConfig.title?.trim() || finalName;
+      const finalValueType = currentValueInputType;
+
+      let finalConfig: Partial<ActionNodeData>;
+
+      if (finalValueType === 'text') {
+          const finalVariations = currentVariations.map(v => v.trim()).filter(v => v); // Filter empty variations
+          if (finalVariations.length === 0) {
+              toast.error('At least one text variation is required.');
+              return;
+          }
+          finalConfig = {
+              name: finalName,
+              title: finalTitle,
+              valueType: 'text',
+              variations: finalVariations,
+              value: finalVariations[0], // Keep first variation in value field
+          };
+      } else { // Function type
+          const finalFunctionValue = currentActionConfig.value?.trim();
+           if (!finalFunctionValue) {
+               toast.error('Function name cannot be empty.');
+               return;
+           }
+          finalConfig = {
+              name: finalName,
+              title: finalTitle,
+              valueType: 'function',
+              value: finalFunctionValue,
+              variations: undefined, // Ensure variations is undefined
+          };
       }
-      const finalConfig: ActionNodeData = {
-        name: finalName,
-        title: currentActionConfig.title?.trim() || finalName,
-        value: currentActionConfig.value || '',
-        valueType: currentValueInputType,
-      };
+
+      console.log("Saving action config:", finalConfig);
       onUpdateAction(selectedNode.id, finalConfig);
       handleSetMode('view');
     }
-  }, [selectedNode, onUpdateAction, currentActionConfig, currentValueInputType, handleSetMode]);
+  }, [selectedNode, onUpdateAction, currentActionConfig, currentValueInputType, currentVariations, handleSetMode]);
 
-  // --- Change Definition Handlers (View Mode) ---
-  const handleChangeIntentClick = useCallback(
-    (newIntentId: string) => {
+
+  // --- Change Definition Handlers (View Mode - Unchanged) ---
+  const handleChangeIntentClick = useCallback((newIntentId: string) => {
       if (selectedNode?.type === 'intent') {
         onUpdateIntent(selectedNode.id, newIntentId);
-        setIsChangingDefinition(false);
-        setSearchTerm('');
+        setIsChangingDefinition(false); setSearchTerm('');
       }
-    },
-    [selectedNode, onUpdateIntent]
-  );
-  const handleChangeActionClick = useCallback(
-    (newActionName: string) => {
+    }, [selectedNode, onUpdateIntent]);
+  const handleChangeActionClick = useCallback((newActionName: string) => {
       if (selectedNode?.type === 'action') {
-        onUpdateAction(selectedNode.id, { name: newActionName });
-        setIsChangingDefinition(false);
-        setSearchTerm('');
+        // When changing definition, we update the node data using the new definition's data
+        const newDef = definedActions.find(a => a.name === newActionName);
+        if (newDef) {
+             onUpdateAction(selectedNode.id, { ...newDef }); // Pass full new definition data
+        } else {
+             toast.error(`Cannot find definition for action: ${newActionName}`);
+        }
+        setIsChangingDefinition(false); setSearchTerm('');
       }
-    },
-    [selectedNode, onUpdateAction]
-  );
+    }, [selectedNode, onUpdateAction, definedActions]); // Add definedActions dependency
 
   // --- Dialog Handlers ---
-  const handleAddIntentExampleInput = useCallback(
-    () => setNewIntentExamples((prev) => [...prev, '']),
-    []
-  );
-  const handleNewIntentExampleChange = useCallback((index: number, value: string) => {
-    setNewIntentExamples((prev) => {
-      const copy = [...prev];
-      copy[index] = value;
-      return copy;
-    });
-  }, []);
-  const handleRemoveNewIntentExample = useCallback((index: number) => {
-    setNewIntentExamples((prev) => prev.filter((_, i) => i !== index));
-  }, []);
-  const handleIntentDialogSubmit = useCallback(() => {
-    const label = newIntentLabel.trim();
-    const id = newIntentId.trim().replace(/\s+/g, '_').toLowerCase();
-    const examples = newIntentExamples.map((e) => e.trim()).filter((e) => e);
-    if (!label || !id) {
-      alert('Label/ID required.');
-      return;
-    }
-    if (intents.some((i) => i.id === id)) {
-      alert(`Intent ID "${id}" exists.`);
-      return;
-    }
-    onAddNewIntentDefinition({ id, label, examples });
-    setNewIntentLabel('');
-    setNewIntentId('');
-    setNewIntentExamples(['']);
-    setShowIntentDialog(false);
-  }, [newIntentLabel, newIntentId, newIntentExamples, intents, onAddNewIntentDefinition]);
-  const handleNewActionValueTypeToggle = useCallback((type: ValueInputType) => {
-    setNewActionValueType(type);
-    setNewActionValue(type === 'function' ? mockAvailableFunctions[0]?.name || '' : '');
-  }, []);
-  const handleActionDialogSubmit = useCallback(() => {
-    const title = newActionTitle.trim();
-    const name = newActionName.trim().replace(/\s+/g, '_').toLowerCase();
-    if (!name) {
-      alert('Name required.');
-      return;
-    }
-    if (definedActions.some((a) => a.name === name)) {
-      alert(`Action Name "${name}" exists.`);
-      return;
-    }
-    onAddNewActionDefinition({
-      title: title || name,
-      name,
-      value: newActionValue,
-      valueType: newActionValueType,
-    });
-    setNewActionTitle('');
-    setNewActionName('');
-    setNewActionValue('');
-    setNewActionValueType('text');
-    setShowActionDialog(false);
-  }, [
-    newActionTitle,
-    newActionName,
-    newActionValue,
-    newActionValueType,
-    definedActions,
-    onAddNewActionDefinition,
-  ]);
+   // --- Intent Dialog (Unchanged) ---
+    const handleAddIntentExampleInput = useCallback(() => setNewIntentExamples((prev) => [...prev, '']), []);
+    const handleNewIntentExampleChange = useCallback((index: number, value: string) => { setNewIntentExamples((prev) => { const copy = [...prev]; copy[index] = value; return copy; }); }, []);
+    const handleRemoveNewIntentExample = useCallback((index: number) => { setNewIntentExamples((prev) => prev.length > 1 ? prev.filter((_, i) => i !== index) : ['']); }, []);
+    const handleIntentDialogSubmit = useCallback(() => {
+        const label = newIntentLabel.trim();
+        const id = newIntentId.trim().replace(/\s+/g, '_').toLowerCase();
+        const finalExamples = newIntentExamples.map((e) => e.trim()).filter((e) => e);
+        if (!label || !id) { toast.error('Intent Label and ID are required.'); return; }
+        if (intents.some((i) => i.id === id)) { toast.error(`Intent ID "${id}" already exists.`); return; }
+        const parsedEntities = parseEntitiesFromExamples(finalExamples);
+        onAddNewIntentDefinition({ id, label, examples: finalExamples, entities: parsedEntities });
+        setNewIntentLabel(''); setNewIntentId(''); setNewIntentExamples(['']); setShowIntentDialog(false);
+    }, [newIntentLabel, newIntentId, newIntentExamples, intents, onAddNewIntentDefinition]);
 
-  // --- Filtering Logic ---
-  const filteredIntents = useMemo(
-    () =>
-      intents.filter(
-        (intent) =>
+   // --- Action Dialog (UPDATED for Variations) ---
+    const handleNewActionValueTypeToggle = useCallback((type: ValueInputType) => {
+        setNewActionValueType(type);
+        // Reset relevant state when type changes
+        if (type === 'text') {
+            setNewActionFunctionValue(''); // Clear function value
+            if (newActionVariations.length === 0) setNewActionVariations(['']); // Ensure at least one empty variation input
+        } else {
+            // Don't necessarily clear variations state immediately, user might toggle back
+             setNewActionFunctionValue(mockAvailableFunctions[0]?.name || ''); // Set default function
+        }
+    }, [newActionVariations.length]); // Dependency ensures check on variations length
+
+    // Variation handlers for the dialog
+     const handleNewActionVariationChange = useCallback((index: number, value: string) => {
+       setNewActionVariations(prev => {
+           const copy = [...prev];
+           copy[index] = value;
+           return copy;
+       });
+   }, []);
+    const handleAddNewActionVariationInput = useCallback(() => {
+       setNewActionVariations(prev => [...prev, '']);
+   }, []);
+    const handleRemoveNewActionVariationInput = useCallback((index: number) => {
+       setNewActionVariations(prev => {
+           if (prev.length <= 1) return [''];
+           return prev.filter((_, i) => i !== index);
+       });
+   }, []);
+
+    // Dialog submit updated for variations
+    const handleActionDialogSubmit = useCallback(() => {
+        const title = newActionTitle.trim();
+        const name = newActionName.trim().replace(/\s+/g, '_').toLowerCase();
+        if (!name) { toast.error('Action Name (ID) is required.'); return; }
+        if (definedActions.some((a) => a.name === name)) { toast.error(`Action Name "${name}" exists.`); return; }
+
+        let actionToAdd: ActionDefinition;
+
+        if (newActionValueType === 'text') {
+            const finalVariations = newActionVariations.map(v => v.trim()).filter(v => v);
+            if (finalVariations.length === 0) {
+                toast.error('At least one text variation is required.');
+                return;
+            }
+            actionToAdd = {
+                title: title || name,
+                name,
+                valueType: 'text',
+                variations: finalVariations,
+                 value: finalVariations[0], // Set first variation as value
+            };
+        } else { // Function type
+             const functionValue = newActionFunctionValue.trim();
+            if (!functionValue) {
+                 toast.error('Function name cannot be empty.');
+                 return;
+             }
+            actionToAdd = {
+                title: title || name,
+                name,
+                valueType: 'function',
+                value: functionValue,
+                 // variations: undefined, // Ensure variations is not set
+            };
+        }
+
+        onAddNewActionDefinition(actionToAdd);
+
+        // Reset dialog state
+        setNewActionTitle(''); setNewActionName(''); setNewActionValueType('text');
+        setNewActionVariations(['']); setNewActionFunctionValue(''); // Reset all value states
+        setShowActionDialog(false);
+    }, [
+        newActionTitle, newActionName, newActionValueType, newActionVariations, newActionFunctionValue, // Include new states
+        definedActions, onAddNewActionDefinition,
+    ]);
+
+
+  // --- Filtering Logic (unchanged) ---
+  const filteredIntents = useMemo(() => intents.filter(intent =>
           intent.label.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          intent.id.toLowerCase().includes(searchTerm.toLowerCase())
-      ),
-    [intents, searchTerm]
-  );
-  const filteredActions = useMemo(
-    () =>
-      definedActions.filter(
-        (action) =>
+          intent.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          (intent.entities && intent.entities.some(e => e.toLowerCase().includes(searchTerm.toLowerCase())))
+      ), [intents, searchTerm]);
+  const filteredActions = useMemo(() => definedActions.filter(action =>
           action.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
           action.name.toLowerCase().includes(searchTerm.toLowerCase())
-      ),
-    [definedActions, searchTerm]
-  );
+      ), [definedActions, searchTerm]);
 
   // --- Render Logic ---
   let NodeIcon: React.ElementType | null = null;
@@ -1647,1008 +1981,344 @@ const Sidebar: React.FC<SidebarProps> = ({
   let iconColor = 'text-gray-600';
 
   if (!selectedNode) {
-    /* ... keep No Selection fallback ... */ return (
-      <div className="relative w-72 bg-white border-l border-gray-200 shadow-lg flex flex-col h-full">
-        {' '}
+     return ( // No Selection Fallback
+      <div className="relative w-80 bg-white border-l border-gray-200 shadow-lg flex flex-col h-full">
         <div className="p-4 border-b border-gray-200 flex justify-between items-center min-h-[60px] flex-shrink-0">
-          {' '}
           <h3 className="text-lg font-semibold text-gray-500 flex items-center gap-2">
             <AlertTriangle size={18} className="text-yellow-500" /> No Selection
-          </h3>{' '}
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-            <X size={20} />
-          </button>{' '}
-        </div>{' '}
-        <div className="flex-grow p-4 text-center text-gray-500 text-sm">
-          {' '}
-          Please select a node on the canvas to see its details.{' '}
-        </div>{' '}
-      </div>
-    );
+          </h3> <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
+        </div> <div className="flex-grow p-4 text-center text-gray-500 text-sm">Please select a node.</div>
+      </div> );
   }
 
-  switch (selectedNode.type) {
-    /* ... keep icon/color switch ... */ case 'start':
-      NodeIcon = PlayCircle;
-      nodeTypeName = 'Start Node';
-      headerColor = 'text-indigo-800';
-      iconColor = 'text-indigo-600';
-      break;
-    case 'intent':
-      NodeIcon = Bot;
-      nodeTypeName = 'Intent Node';
-      headerColor = 'text-blue-800';
-      iconColor = 'text-blue-600';
-      break;
-    case 'action':
-      NodeIcon = Zap;
-      nodeTypeName = 'Action Node';
-      headerColor = 'text-green-800';
-      iconColor = 'text-green-600';
-      break;
-    case 'end':
-      NodeIcon = FlagOff;
-      nodeTypeName = 'End Node';
-      headerColor = 'text-red-800';
-      iconColor = 'text-red-600';
-      break;
-    default:
-      NodeIcon = AlertTriangle;
-      nodeTypeName = 'Unknown Node';
-      iconColor = 'text-yellow-500';
-  }
-  const isConfigurableNode =
-    selectedNode.type === 'start' ||
-    selectedNode.type === 'intent' ||
-    selectedNode.type === 'action';
+  // Determine Icon, Type Name, Colors
+   switch (selectedNode.type) {
+     case 'start': NodeIcon = PlayCircle; nodeTypeName = 'Start Node'; headerColor = 'text-indigo-800'; iconColor = 'text-indigo-600'; break;
+     case 'intent': NodeIcon = Bot; nodeTypeName = 'Intent Node'; headerColor = 'text-blue-800'; iconColor = 'text-blue-600'; break;
+     case 'action': NodeIcon = Zap; nodeTypeName = 'Action Node'; headerColor = 'text-green-800'; iconColor = 'text-green-600'; break;
+     case 'end': NodeIcon = FlagOff; nodeTypeName = 'End Node'; headerColor = 'text-red-800'; iconColor = 'text-red-600'; break;
+     default: NodeIcon = AlertTriangle; nodeTypeName = 'Unknown Node'; headerColor = 'text-gray-800'; iconColor = 'text-yellow-500';
+   }
+  const isConfigurable = selectedNode.type === 'start' || selectedNode.type === 'intent' || selectedNode.type === 'action';
   const nodeData = selectedNode.data || {};
+  const currentIntentDefinition = nodeData.intentId ? intents.find(i => i.id === nodeData.intentId) : null;
 
   return (
-    <div className="relative w-72 bg-white border-l border-gray-200 shadow-lg flex flex-col h-full transition-all duration-300 ease-in-out z-10">
+    <div className="relative w-80 bg-white border-l border-gray-200 shadow-lg flex flex-col h-full transition-all duration-300 ease-in-out z-10">
       {/* Header */}
       <div className="p-4 border-b border-gray-200 flex justify-between items-center min-h-[60px] flex-shrink-0">
-        <h3 className={`text-lg font-semibold ${headerColor} flex items-center gap-2`}>
-          {' '}
-          {NodeIcon && <NodeIcon size={18} className={iconColor} />} {nodeTypeName}{' '}
-        </h3>
-        <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-          {' '}
-          <X size={20} />{' '}
-        </button>
+        <h3 className={`text-lg font-semibold ${headerColor} flex items-center gap-2`}> {NodeIcon && <NodeIcon size={18} className={iconColor} />} {nodeTypeName} </h3>
+        <button onClick={onClose} className="text-gray-400 hover:text-gray-600"> <X size={20} /> </button>
       </div>
+
       {/* Content Area */}
       <div className="flex-grow overflow-y-auto p-4 space-y-6 scrollbar-thin scrollbar-thumb-gray-300 hover:scrollbar-thumb-gray-400">
-        {!isConfigurableNode ? (
-          <div className="text-center text-gray-400 text-sm pt-4">
-            {' '}
-            This node type ({selectedNode.type || 'Unknown'}) has no configurable options.{' '}
-          </div>
+        {!isConfigurable ? ( <div className="text-center text-gray-400 text-sm pt-4"> This node type ({selectedNode.type || 'Unknown'}) has no configurable options. </div>
         ) : (
           <>
             {/* VIEW MODE - NORMAL DISPLAY */}
             {mode === 'view' && !isChangingDefinition && (
-              <div className="space-y-3">
-                {' '}
-                {/* REMOVED animate-fadeIn */}
-                {/* --- Current Configuration Display --- */}
+              <div className="space-y-4">
                 <h4 className="text-md font-semibold text-gray-700 mb-2">Current Configuration</h4>
-                {/* ... Keep Start/Intent/Action view details ... */}
-                {selectedNode.type === 'start' && (
-                  <p className="text-sm">
-                    <span className="text-gray-500">Story Name:</span>{' '}
-                    <span className="font-medium text-indigo-700 break-words">
-                      {nodeData.storyName || '(Not Set)'}
-                    </span>
-                  </p>
-                )}
-                {selectedNode.type === 'intent' && (
-                  <>
-                    {' '}
-                    <p className="text-sm">
-                      <span className="text-gray-500">Intent:</span>{' '}
-                      <span className="font-medium text-blue-700 break-words">
-                        {intents.find((i) => i.id === nodeData.intentId)?.label ||
-                          nodeData.intentId ||
-                          '(Not Set)'}
-                      </span>
-                    </p>{' '}
-                    <p className="text-sm">
-                      <span className="text-gray-500">ID:</span>{' '}
-                      <code className="text-xs bg-blue-100 text-blue-700 px-1 py-0.5 rounded break-all">
-                        {nodeData.intentId || 'N/A'}
-                      </code>
-                    </p>{' '}
-                    <div className="text-sm">
-                      {' '}
-                      <span className="text-gray-500">Examples:</span>{' '}
-                      {Array.isArray(nodeData.examples) && nodeData.examples.length > 0 ? (
-                        <ul className="list-disc list-inside pl-2 mt-1 space-y-0.5">
-                          {' '}
-                          {nodeData.examples.slice(0, 3).map((ex: string, i: number) => (
-                            <li key={i} className="text-gray-600 text-xs truncate" title={ex}>
-                              {ex}
-                            </li>
-                          ))}{' '}
-                          {nodeData.examples.length > 3 && (
-                            <li className="text-gray-400 text-xs italic">
-                              ...and {nodeData.examples.length - 3} more
-                            </li>
-                          )}{' '}
-                        </ul>
-                      ) : (
-                        <span className="text-gray-400 text-xs ml-1"> (None)</span>
-                      )}{' '}
-                    </div>{' '}
-                  </>
-                )}
-                {selectedNode.type === 'action' && (
-                  <>
-                    {' '}
-                    <p className="text-sm">
-                      <span className="text-gray-500">Title:</span>{' '}
-                      <span className="font-medium text-gray-800 break-words">
-                        {nodeData.title || nodeData.name || '(Not Set)'}
-                      </span>
-                    </p>{' '}
-                    <p className="text-sm">
-                      <span className="text-gray-500">Name:</span>{' '}
-                      <span className="font-medium text-green-700 break-words">
-                        {nodeData.name || '(Not Set)'}
-                      </span>
-                    </p>{' '}
-                    <div className="text-sm flex items-start gap-2">
-                      {' '}
-                      <span className="text-gray-500 flex-shrink-0">
-                        {nodeData.valueType === 'function' ? 'Function:' : 'Value:'}
-                      </span>{' '}
-                      {nodeData.valueType === 'function' && (
-                        <GitBranch
-                          size={14}
-                          className="text-gray-500 mt-0.5 flex-shrink-0"
-                          title="Function Call"
-                        />
-                      )}{' '}
-                      <code className="text-xs bg-green-100 text-green-700 px-1 py-0.5 rounded break-words max-w-full flex-grow">
-                        {' '}
-                        {typeof nodeData.value === 'string'
-                          ? nodeData.value || '(empty)'
-                          : JSON.stringify(nodeData.value)}{' '}
-                      </code>{' '}
-                    </div>{' '}
-                  </>
-                )}
-                {/* --- Action Buttons (Edit, Change Intent/Action) --- */}
-                <div className="mt-5 pt-4 border-t border-gray-100 space-y-2">
-                  {/* Edit Button */}
-                  <button
-                    onClick={() => handleSetMode('edit')}
-                    className={`w-full flex items-center justify-center gap-2 px-4 py-2 rounded focus:outline-none focus:ring-2 text-sm font-medium transition-colors duration-150 border ${selectedNode.type === 'start' ? 'bg-indigo-50 border-indigo-300 text-indigo-700 hover:bg-indigo-100 focus:ring-indigo-500' : selectedNode.type === 'intent' ? 'bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100 focus:ring-blue-500' : 'bg-green-50 border-green-300 text-green-700 hover:bg-green-100 focus:ring-green-500'}`}
-                  >
-                    {' '}
-                    <Edit size={16} /> Edit Details{' '}
-                  </button>
-                  {/* Change Button */}
-                  {(selectedNode.type === 'intent' || selectedNode.type === 'action') && (
-                    <button
-                      onClick={() => setIsChangingDefinition(true)}
-                      className="w-full flex items-center justify-center gap-2 bg-gray-50 border border-gray-300 text-gray-700 px-4 py-2 rounded hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-400 text-sm font-medium"
-                    >
-                      {' '}
-                      <Replace size={16} />{' '}
-                      {selectedNode.type === 'intent' ? 'Change Intent' : 'Change Action'}{' '}
-                    </button>
-                  )}
-                </div>
-                {/* --- Footer Buttons (Define New) --- */}
+                {/* --- Start Node View --- */}
+                {selectedNode.type === 'start' && ( <>
+                    <p className="text-sm"><span className="text-gray-500">Story Name:</span> <span className="font-medium text-indigo-700 break-words">{nodeData.storyName || '(Not Set)'}</span></p>
+                    <p className="text-sm"><span className="text-gray-500">Story ID:</span> <code className="text-xs bg-indigo-100 text-indigo-700 px-1 py-0.5 rounded break-all">{nodeData.storyId || '(Not Set)'}</code></p>
+                </> )}
+                {/* --- Intent Node View --- */}
+                {selectedNode.type === 'intent' && ( <>
+                    <p className="text-sm"><span className="text-gray-500">Intent Label:</span> <span className="font-medium text-blue-700 break-words">{currentIntentDefinition?.label || nodeData.intentId || '(Not Set)'}</span></p>
+                    <p className="text-sm"><span className="text-gray-500">Intent ID:</span> <code className="text-xs bg-blue-100 text-blue-700 px-1 py-0.5 rounded break-all">{nodeData.intentId || 'N/A'}</code></p>
+                    <div className="text-sm"> <span className="text-gray-500">Entities:</span>
+                        {nodeData.entities && nodeData.entities.length > 0 ? ( <div className="flex flex-wrap gap-1 mt-1"> {nodeData.entities.map((entity: string, i: number) => ( <span key={i} className="inline-flex items-center gap-1 bg-gray-100 text-gray-700 text-xs font-medium px-2 py-0.5 rounded-full border border-gray-300"><Tag size={12} /> {entity}</span> ))} </div>
+                        ) : ( <span className="text-gray-400 text-xs ml-1"> (None detected)</span> )}
+                    </div>
+                    <div className="text-sm"> <span className="text-gray-500">Examples:</span>
+                        {Array.isArray(nodeData.examples) && nodeData.examples.length > 0 ? ( <div className="mt-1 max-h-28 overflow-y-auto bg-gray-50 p-2 rounded border border-gray-200 scrollbar-thin"> <ul className="space-y-1"> {nodeData.examples.map((ex: string, i: number) => ( <li key={i} className="text-gray-600 text-xs" title={ex}> <span dangerouslySetInnerHTML={{ __html: ex.replace(/\[(.*?)\]\((.*?)\)/g, '[<strong class="text-blue-600 font-normal">$1</strong>]<span class="text-gray-500 font-normal">($2)</span>') }} /> </li> ))} </ul> </div>
+                        ) : ( <span className="text-gray-400 text-xs ml-1"> (None)</span> )}
+                    </div>
+                </> )}
+                {/* --- Action Node View (Updated for Variations) --- */}
+                 {selectedNode.type === 'action' && ( <>
+                    <p className="text-sm"> <span className="text-gray-500">Title:</span> <span className="font-medium text-gray-800 break-words">{nodeData.title || nodeData.name || '(Not Set)'}</span> </p>
+                    <p className="text-sm"> <span className="text-gray-500">Name (ID):</span> <code className="text-xs bg-green-100 text-green-700 px-1 py-0.5 rounded break-all">{nodeData.name || '(Not Set)'}</code> </p>
+                    {nodeData.valueType === 'function' ? (
+                        // Function View
+                         <div className="text-sm flex items-start gap-1">
+                            <span className="text-gray-500 flex-shrink-0 mt-0.5">Function:</span>
+                            <GitBranch size={14} className="text-gray-500 mt-1 flex-shrink-0" title="Function Call" />
+                            <div className="text-xs bg-green-50 border border-green-200 text-green-800 px-2 py-1 rounded break-words max-w-full flex-grow font-mono">
+                                {nodeData.value || <span className="text-gray-400 italic">(Not Set)</span>}
+                            </div>
+                         </div>
+                    ) : (
+                        // Text/Variations View
+                        <div className="text-sm">
+                            <div className="flex justify-between items-center">
+                                <span className="text-gray-500">Text Variations:</span>
+                                <span className='text-xs text-gray-400'>({nodeData.variations?.length || 0} total)</span>
+                            </div>
+                             {Array.isArray(nodeData.variations) && nodeData.variations.length > 0 ? (
+                                <div className="mt-1 max-h-32 overflow-y-auto bg-gray-50 p-2 rounded border border-gray-200 scrollbar-thin">
+                                    <ul className="space-y-1">
+                                    {nodeData.variations.map((v: string, i: number) => (
+                                        <li key={i} className="text-green-800 text-xs font-mono bg-green-50 p-1 rounded border border-green-100 whitespace-pre-wrap" title={v}>
+                                         {v}
+                                        </li>
+                                    ))}
+                                    </ul>
+                                </div>
+                            ) : (
+                                <span className="text-gray-400 text-xs ml-1"> (None defined)</span>
+                            )}
+                        </div>
+                    )}
+                 </> )}
+                 {/* --- Action Buttons --- */}
+                 <div className="mt-5 pt-4 border-t border-gray-100 space-y-2">
+                  <button onClick={() => handleSetMode('edit')} className={`w-full flex items-center justify-center gap-2 px-4 py-2 rounded focus:outline-none focus:ring-2 text-sm font-medium transition-colors duration-150 border ${selectedNode.type === 'start' ? 'bg-indigo-50 border-indigo-300 text-indigo-700 hover:bg-indigo-100 focus:ring-indigo-500' : selectedNode.type === 'intent' ? 'bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100 focus:ring-blue-500' : 'bg-green-50 border-green-300 text-green-700 hover:bg-green-100 focus:ring-green-500'}`}> <Edit size={16} /> Edit Details </button>
+                  {(selectedNode.type === 'intent' || selectedNode.type === 'action') && ( <button onClick={() => { setIsChangingDefinition(true); setSearchTerm(''); }} className="w-full flex items-center justify-center gap-2 bg-gray-50 border border-gray-300 text-gray-700 px-4 py-2 rounded hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-400 text-sm font-medium"> <Replace size={16} /> Change {selectedNode.type === 'intent' ? 'Intent' : 'Action'} Definition </button> )}
+                 </div>
+                 {/* --- Footer Buttons (Define New) --- */}
                 <div className="mt-auto pt-3 border-t border-gray-200">
-                  {selectedNode.type === 'intent' && (
-                    <button
-                      onClick={() => setShowIntentDialog(true)}
-                      className="w-full flex items-center justify-center gap-1.5 bg-blue-50 border border-blue-300 text-blue-700 px-3 py-2 rounded hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm transition-colors duration-150"
-                    >
-                      {' '}
-                      <PlusCircle size={16} /> Define New Intent{' '}
-                    </button>
-                  )}
-                  {selectedNode.type === 'action' && (
-                    <button
-                      onClick={() => setShowActionDialog(true)}
-                      className="w-full flex items-center justify-center gap-1.5 bg-green-50 border border-green-300 text-green-700 px-3 py-2 rounded hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-green-500 text-sm transition-colors duration-150"
-                    >
-                      {' '}
-                      <PlusCircle size={16} /> Define New Action{' '}
-                    </button>
-                  )}
+                  {selectedNode.type === 'intent' && ( <button onClick={() => setShowIntentDialog(true)} className="w-full flex items-center justify-center gap-1.5 bg-blue-50 border border-blue-300 text-blue-700 px-3 py-2 rounded hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"> <PlusCircle size={16} /> Define New Intent </button> )}
+                  {selectedNode.type === 'action' && ( <button onClick={() => setShowActionDialog(true)} className="w-full flex items-center justify-center gap-1.5 bg-green-50 border border-green-300 text-green-700 px-3 py-2 rounded hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-green-500 text-sm"> <PlusCircle size={16} /> Define New Action </button> )}
                 </div>
               </div>
             )}
 
-            {/* VIEW MODE - CHANGE DEFINITION */}
-            {mode === 'view' && isChangingDefinition && (
-              <div className="space-y-3">
-                {' '}
-                {/* REMOVED animate-fadeIn */}
-                {/* ... Keep Change Definition UI (Title, Cancel, Search, List) ... */}
-                <div className="flex justify-between items-center mb-2">
-                  {' '}
-                  <h4 className="text-md font-semibold text-gray-700">
-                    {' '}
-                    Select New {selectedNode.type === 'intent' ? 'Intent' : 'Action'}{' '}
-                  </h4>{' '}
-                  <button
-                    onClick={() => {
-                      setIsChangingDefinition(false);
-                      setSearchTerm('');
-                    }}
-                    className="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1"
-                    title="Cancel Change"
-                  >
-                    {' '}
-                    <ChevronLeft size={16} /> Cancel{' '}
-                  </button>{' '}
-                </div>
-                <div className="relative">
-                  {' '}
-                  <input
-                    type="text"
-                    placeholder={`Search ${selectedNode.type === 'intent' ? 'intents' : 'actions'}...`}
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className="w-full border border-gray-300 rounded-md p-2 pl-8 text-sm focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 shadow-sm"
-                  />{' '}
-                  <Search
-                    size={16}
-                    className="absolute left-2.5 top-1/2 transform -translate-y-1/2 text-gray-400"
-                  />{' '}
-                </div>
-                <div className="space-y-1 max-h-80 overflow-y-auto border rounded-md p-1 bg-gray-50 scrollbar-thin">
-                  {selectedNode.type === 'intent' &&
-                    (filteredIntents.length > 0 ? (
-                      filteredIntents.map((intent) => (
-                        <button
-                          key={intent.id}
-                          onClick={() => handleChangeIntentClick(intent.id)}
-                          disabled={nodeData.intentId === intent.id}
-                          className={`w-full text-left px-3 py-1.5 rounded text-sm flex justify-between items-center transition-colors duration-100 ${nodeData.intentId === intent.id ? 'bg-blue-100 text-blue-800 font-medium cursor-not-allowed' : 'hover:bg-blue-100 text-gray-700 hover:text-blue-800'}`}
-                          title={intent.id}
-                        >
-                          {' '}
-                          <span>{intent.label}</span>{' '}
-                          <code className="text-xs text-gray-500">{intent.id}</code>{' '}
-                        </button>
-                      ))
-                    ) : (
-                      <p className="text-center text-xs text-gray-400 py-4">No matching intents.</p>
-                    ))}
-                  {selectedNode.type === 'action' &&
-                    (filteredActions.length > 0 ? (
-                      filteredActions.map((action) => (
-                        <button
-                          key={action.name}
-                          onClick={() => handleChangeActionClick(action.name)}
-                          disabled={nodeData.name === action.name}
-                          className={`w-full text-left px-3 py-1.5 rounded text-sm flex justify-between items-center transition-colors duration-100 ${nodeData.name === action.name ? 'bg-green-100 text-green-800 font-medium cursor-not-allowed' : 'hover:bg-green-100 text-gray-700 hover:text-green-800'}`}
-                          title={action.name}
-                        >
-                          {' '}
-                          <span className="truncate">{action.title || action.name}</span>{' '}
-                          {action.valueType === 'function' && (
-                            <GitBranch
-                              size={14}
-                              className="text-gray-500 ml-2 flex-shrink-0"
-                              title="Function"
-                            />
-                          )}{' '}
-                        </button>
-                      ))
-                    ) : (
-                      <p className="text-center text-xs text-gray-400 py-4">No matching actions.</p>
-                    ))}
-                </div>
-              </div>
-            )}
+            {/* VIEW MODE - CHANGE DEFINITION (Unchanged Structure) */}
+            {mode === 'view' && isChangingDefinition && ( <div className="space-y-3">
+                 <div className="flex justify-between items-center mb-2"> <h4 className="text-md font-semibold text-gray-700">Select New {selectedNode.type === 'intent' ? 'Intent' : 'Action'}</h4> <button onClick={() => { setIsChangingDefinition(false); setSearchTerm(''); }} className="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1" title="Cancel Change"> <ChevronLeft size={16} /> Cancel </button> </div>
+                 <div className="relative"> <input type="text" placeholder={`Search ${selectedNode.type === 'intent' ? 'intents...' : 'actions...'}`} value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full border border-gray-300 rounded-md p-2 pl-8 text-sm focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 shadow-sm" /> <Search size={16} className="absolute left-2.5 top-1/2 transform -translate-y-1/2 text-gray-400" /> </div>
+                 <div className="space-y-1 max-h-80 overflow-y-auto border rounded-md p-1 bg-gray-50 scrollbar-thin">
+                  {selectedNode.type === 'intent' && (filteredIntents.length > 0 ? ( filteredIntents.map((intent) => ( <button key={intent.id} onClick={() => handleChangeIntentClick(intent.id)} disabled={nodeData.intentId === intent.id} className={`w-full text-left px-3 py-1.5 rounded text-sm flex justify-between items-center transition-colors duration-100 ${nodeData.intentId === intent.id ? 'bg-blue-100 text-blue-800 font-medium cursor-not-allowed opacity-70' : 'hover:bg-blue-50 text-gray-700 hover:text-blue-800'}`} title={`ID: ${intent.id}\nEntities: ${intent.entities?.join(', ') || 'None'}`}> <span className='truncate pr-2'>{intent.label}</span> <code className="text-xs text-gray-500 flex-shrink-0">{intent.id}</code> </button> )) ) : ( <p className="text-center text-xs text-gray-400 py-4">No matching intents.</p> ))}
+                  {selectedNode.type === 'action' && (filteredActions.length > 0 ? ( filteredActions.map((action) => ( <button key={action.name} onClick={() => handleChangeActionClick(action.name)} disabled={nodeData.name === action.name} className={`w-full text-left px-3 py-1.5 rounded text-sm flex justify-between items-center transition-colors duration-100 ${nodeData.name === action.name ? 'bg-green-100 text-green-800 font-medium cursor-not-allowed opacity-70' : 'hover:bg-green-50 text-gray-700 hover:text-green-800'}`} title={`Name: ${action.name}\nType: ${action.valueType}`}> <span className="truncate pr-2">{action.title || action.name}</span> {action.valueType === 'function' && ( <GitBranch size={14} className="text-gray-500 ml-2 flex-shrink-0" title="Function" /> )} </button> )) ) : ( <p className="text-center text-xs text-gray-400 py-4">No matching actions.</p> ))}
+                 </div>
+            </div> )}
 
             {/* EDIT MODE */}
-            {mode === 'edit' && (
-              <div className="space-y-4">
-                {' '}
-                {/* REMOVED animate-fadeIn */}
-                <h4 className="text-md font-semibold text-gray-700 mb-1 flex items-center gap-2">
-                  <Edit size={16} /> Edit Details
-                </h4>
-                {/* ... Keep Edit Start/Intent/Action forms ... */}
-                {selectedNode.type === 'start' && (
-                  <div className="space-y-4 p-3 bg-indigo-50 border border-indigo-200 rounded-md">
-                    {' '}
-                    <div>
-                      {' '}
-                      <label
-                        className="block text-sm font-medium text-gray-700 mb-1"
-                        htmlFor="storyNameEdit"
-                      >
-                        {' '}
-                        Story Name{' '}
-                      </label>{' '}
-                      <input
-                        id="storyNameEdit"
-                        type="text"
-                        value={currentStoryName}
-                        onChange={(e) => handleStoryNameChange(e.target.value)}
-                        className="block w-full border border-gray-300 rounded-md p-2 focus:ring-indigo-500 focus:border-indigo-500 shadow-sm text-sm"
-                        placeholder="Enter a name for this story"
-                      />{' '}
-                    </div>{' '}
-                    <div className="flex gap-2 pt-3 border-t border-indigo-100">
-                      {' '}
-                      <button
-                        onClick={handleStartNodeEditSave}
-                        className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-medium"
-                      >
-                        {' '}
-                        <Check size={16} /> Save{' '}
-                      </button>{' '}
-                      <button
-                        onClick={() => handleSetMode('view')}
-                        className="flex-1 flex items-center justify-center gap-2 bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 text-sm font-medium"
-                      >
-                        {' '}
-                        Cancel{' '}
-                      </button>{' '}
-                    </div>{' '}
-                  </div>
-                )}
-                {selectedNode.type === 'start' && (
-                  <div className="space-y-4 p-3 bg-indigo-50 border border-indigo-200 rounded-md">
-                    {' '}
-                    <div>
-                      {' '}
-                      <label
-                        className="block text-sm font-medium text-gray-700 mb-1"
-                        htmlFor="storyIdEdit"
-                      >
-                        {' '}
-                        Story Id{' '}
-                      </label>{' '}
-                      <input
-                        id="storyIdEdit"
-                        type="text"
-                        value={currentStoryId}
-                        onChange={(e) => handleStoryIdChange(e.target.value)}
-                        className="block w-full border border-gray-300 rounded-md p-2 focus:ring-indigo-500 focus:border-indigo-500 shadow-sm text-sm"
-                        placeholder="Enter a code friendly id"
-                      />{' '}
-                    </div>{' '}
-                    <div className="flex gap-2 pt-3 border-t border-indigo-100">
-                      {' '}
-                      <button
-                        onClick={handleStartNodeEditSave}
-                        className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-medium"
-                      >
-                        {' '}
-                        <Check size={16} /> Save{' '}
-                      </button>{' '}
-                      <button
-                        onClick={() => handleSetMode('view')}
-                        className="flex-1 flex items-center justify-center gap-2 bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 text-sm font-medium"
-                      >
-                        {' '}
-                        Cancel{' '}
-                      </button>{' '}
-                    </div>{' '}
-                  </div>
-                )}
-                {/* Add for story label change and story id change */}
-                {selectedNode.type === 'intent' && (
-                  <div className="space-y-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
-                    {' '}
-                    <div>
-                      {' '}
-                      <label
-                        className="block text-sm font-medium text-gray-700 mb-1"
-                        htmlFor="intentIdEdit"
-                      >
-                        {' '}
-                        Intent <span className="text-red-500">*</span>
-                      </label>{' '}
-                      <select
-                        id="intentIdEdit"
-                        value={currentIntentId}
-                        onChange={(e) => handleIntentIdEditChange(e.target.value)}
-                        required
-                        className="block w-full border border-gray-300 rounded-md p-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm text-sm"
-                      >
-                        {' '}
-                        <option value="" disabled>
-                          Select Intent
-                        </option>{' '}
-                        {intents.map((intent) => (
-                          <option key={intent.id} value={intent.id}>
-                            {intent.label} ({intent.id})
-                          </option>
-                        ))}{' '}
-                        {!intents.some((i) => i.id === currentIntentId) && currentIntentId && (
-                          <option value={currentIntentId}>
-                            {currentIntentId} (Current/Unknown)
-                          </option>
-                        )}{' '}
-                      </select>{' '}
-                      <p className="text-xs text-gray-500 mt-1">
-                        {' '}
-                        Label:{' '}
-                        {intents.find((i) => i.id === currentIntentId)?.label ||
-                          '(Custom/Not Found)'}{' '}
-                      </p>{' '}
-                    </div>{' '}
-                    <div>
-                      {' '}
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Examples <span className="text-gray-400 text-xs">(node & def)</span>
-                      </label>{' '}
-                      {currentExamples.map((example, index) => (
-                        <div key={index} className="mt-1 flex items-center gap-2">
-                          {' '}
-                          <input
-                            type="text"
-                            value={example}
-                            onChange={(e) => handleExampleChange(index, e.target.value)}
-                            className="flex-grow border border-gray-300 rounded-md p-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm text-sm"
-                            placeholder={`Example ${index + 1}`}
-                          />{' '}
-                          <button
-                            onClick={() => handleRemoveExampleInput(index)}
-                            type="button"
-                            className={`p-1 text-red-500 hover:text-red-700 rounded-full hover:bg-red-100 flex-shrink-0 ${currentExamples.length <= 0 ? 'invisible' : ''}`}
-                            title="Remove example"
-                          >
-                            {' '}
-                            <X size={16} />{' '}
-                          </button>{' '}
+            {mode === 'edit' && ( <div className="space-y-4">
+                <h4 className="text-md font-semibold text-gray-700 mb-1 flex items-center gap-2"> <Edit size={16} /> Edit Details </h4>
+                {/* --- Edit Start Node --- */}
+                {selectedNode.type === 'start' && ( <div className="space-y-4 p-3 bg-indigo-50 border border-indigo-200 rounded-md">
+                    <div> <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="storyNameEdit">Story Name</label> <input id="storyNameEdit" type="text" value={currentStoryName} onChange={(e) => handleStoryNameChange(e.target.value)} className="block w-full border border-gray-300 rounded-md p-2 focus:ring-indigo-500 focus:border-indigo-500 shadow-sm text-sm" placeholder="Enter story name"/> </div>
+                    <div> <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="storyIdEdit">Story ID <span className="text-red-500">*</span></label> <input id="storyIdEdit" type="text" value={currentStoryId} onChange={(e) => handleStoryIdChange(e.target.value)} required className="block w-full border border-gray-300 rounded-md p-2 focus:ring-indigo-500 focus:border-indigo-500 shadow-sm text-sm font-mono" placeholder="e.g., main_story_path"/> <p className="text-xs text-gray-500 mt-1">Unique ID (lowercase_underscores).</p> </div>
+                    <div className="flex gap-2 pt-3 border-t border-indigo-100"> <button onClick={handleStartNodeEditSave} className="flex-1 btn btn-primary btn-sm"> <Check size={16} /> Save </button> <button onClick={() => handleSetMode('view')} className="flex-1 btn btn-secondary btn-sm"> Cancel </button> </div>
+                </div> )}
+                {/* --- Edit Intent Node --- */}
+                {selectedNode.type === 'intent' && ( <div className="space-y-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
+                    <div> <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="intentIdEdit">Intent Definition <span className="text-red-500">*</span></label> <select id="intentIdEdit" value={currentIntentId} onChange={(e) => handleIntentIdEditChange(e.target.value)} required className="block w-full border border-gray-300 rounded-md p-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm text-sm"> <option value="" disabled>-- Select Intent --</option> {intents.map((intent) => ( <option key={intent.id} value={intent.id}> {intent.label} ({intent.id}) </option> ))} {!intents.some(i => i.id === currentIntentId) && currentIntentId && ( <option value={currentIntentId} disabled> {currentIntentId} (Current/Invalid) </option> )} </select> <p className="text-xs text-gray-500 mt-1"> Label: {intents.find(i => i.id === currentIntentId)?.label || <span className="italic text-red-600">Not Found</span>} </p> </div>
+                    <div> <label className="block text-sm font-medium text-gray-700 mb-1"> Examples <span className="text-gray-400 text-xs">(updates definition)</span> </label> <p className="text-xs text-gray-500 mb-2"> Use <code className="text-xs">[value](entity)</code> format. </p> <div className="space-y-2 max-h-60 overflow-y-auto pr-1 scrollbar-thin"> {currentExamples.map((example, index) => ( <div key={index} className="flex items-center gap-2"> <input type="text" value={example} onChange={(e) => handleExampleChange(index, e.target.value)} className="flex-grow border border-gray-300 rounded-md p-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm text-sm" placeholder={`Example ${index + 1}`}/> <button onClick={() => handleRemoveExampleInput(index)} type="button" disabled={currentExamples.length <= 1 && example === ''} className={`p-1 text-red-500 hover:text-red-700 rounded-full hover:bg-red-100 flex-shrink-0 disabled:text-gray-400 disabled:hover:bg-transparent disabled:cursor-not-allowed ${currentExamples.length <= 1 ? 'invisible' : ''}`} title="Remove"> <X size={16} /> </button> </div> ))} </div> <button onClick={handleAddExampleInput} type="button" className="mt-2 text-blue-600 hover:text-blue-800 text-sm flex items-center gap-1"> <PlusCircle size={16} /> Add Example </button> </div>
+                    <div className="flex gap-2 pt-3 border-t border-blue-100"> <button onClick={handleIntentEditSave} className="flex-1 btn btn-primary btn-sm" disabled={!currentIntentId || !intents.some(i => i.id === currentIntentId)}> <Check size={16} /> Save </button> <button onClick={() => handleSetMode('view')} className="flex-1 btn btn-secondary btn-sm"> Cancel </button> </div>
+                </div> )}
+                {/* --- Edit Action Node (Updated for Variations) --- */}
+                {selectedNode.type === 'action' && ( <div className="space-y-4 p-3 bg-green-50 border border-green-200 rounded-md">
+                     <div> <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="actionConfigTitle">Display Title <span className="text-gray-400 text-xs">(optional)</span></label> <input id="actionConfigTitle" type="text" value={currentActionConfig.title || ''} onChange={(e) => handleActionConfigChange('title', e.target.value)} className="block w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm" placeholder="Node title"/> </div>
+                     <div> <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="actionConfigName">Action Name (ID) <span className="text-red-500">*</span></label> <input id="actionConfigName" type="text" value={currentActionConfig.name || ''} onChange={(e) => handleActionConfigChange('name', e.target.value)} required className="block w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm font-mono" placeholder="e.g., action_ask_name"/> <p className="text-xs text-gray-500 mt-1">Unique ID (lowercase_underscores).</p> </div>
+                     <div> <label className="block text-sm font-medium text-gray-700 mb-1">Value Type</label> <div className="flex gap-2"> <button onClick={() => handleValueTypeToggle('text')} className={`btn-sm btn-toggle ${currentValueInputType === 'text' ? 'active' : ''}`}> <Type size={14} /> Text/Variations </button> <button onClick={() => handleValueTypeToggle('function')} className={`btn-sm btn-toggle ${currentValueInputType === 'function' ? 'active' : ''}`}> <GitBranch size={14} /> Function </button> </div> </div>
+                     {/* Variations Input Area */}
+                    {currentValueInputType === 'text' && (
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1"> Response Variations <span className="text-red-500">*</span></label>
+                            <div className="space-y-2 max-h-60 overflow-y-auto pr-1 scrollbar-thin border border-gray-200 bg-white p-2 rounded">
+                                {currentVariations.map((variation, index) => (
+                                    <div key={index} className="flex items-center gap-2">
+                                        <textarea
+                                            value={variation}
+                                            onChange={(e) => handleVariationChange(index, e.target.value)}
+                                            className="flex-grow border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm font-mono text-xs"
+                                            placeholder={`Variation ${index + 1}`}
+                                            rows={2} // Small text area for each variation
+                                        />
+                                        <button
+                                            onClick={() => handleRemoveVariationInput(index)}
+                                            type="button"
+                                            disabled={currentVariations.length <= 1} // Disable removing the last one
+                                            className={`p-1 text-red-500 hover:text-red-700 rounded-full hover:bg-red-100 flex-shrink-0 disabled:text-gray-400 disabled:hover:bg-transparent disabled:cursor-not-allowed`}
+                                            title="Remove variation"
+                                        > <Trash2 size={16} /> </button>
+                                    </div>
+                                ))}
+                            </div>
+                            <button onClick={handleAddVariationInput} type="button" className="mt-2 text-green-600 hover:text-green-800 text-sm flex items-center gap-1"> <PlusCircle size={16} /> Add Variation </button>
                         </div>
-                      ))}{' '}
-                      {currentExamples.length === 0 && (
-                        <p className="text-xs text-gray-400 italic mt-1">No examples.</p>
-                      )}{' '}
-                      <button
-                        onClick={handleAddExampleInput}
-                        type="button"
-                        className="mt-2 text-blue-600 hover:text-blue-800 text-sm flex items-center gap-1"
-                      >
-                        {' '}
-                        <PlusCircle size={16} /> Add Example{' '}
-                      </button>{' '}
-                    </div>{' '}
-                    <div className="flex gap-2 pt-3 border-t border-blue-100">
-                      {' '}
-                      <button
-                        onClick={handleIntentEditSave}
-                        className="flex-1 flex items-center justify-center gap-2 bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm font-medium"
-                      >
-                        {' '}
-                        <Check size={16} /> Save{' '}
-                      </button>{' '}
-                      <button
-                        onClick={() => handleSetMode('view')}
-                        className="flex-1 flex items-center justify-center gap-2 bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 text-sm font-medium"
-                      >
-                        {' '}
-                        Cancel{' '}
-                      </button>{' '}
-                    </div>{' '}
-                  </div>
-                )}
-                {selectedNode.type === 'action' && (
-                  <div className="space-y-4 p-3 bg-green-50 border border-green-200 rounded-md">
-                    {' '}
-                    <div>
-                      {' '}
-                      <label
-                        className="block text-sm font-medium text-gray-700 mb-1"
-                        htmlFor="actionConfigTitle"
-                      >
-                        {' '}
-                        Title{' '}
-                      </label>{' '}
-                      <input
-                        id="actionConfigTitle"
-                        type="text"
-                        value={currentActionConfig.title || ''}
-                        onChange={(e) => handleActionConfigChange('title', e.target.value)}
-                        className="block w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm"
-                        placeholder="User-friendly title (optional)"
-                      />{' '}
-                    </div>{' '}
-                    <div>
-                      {' '}
-                      <label
-                        className="block text-sm font-medium text-gray-700 mb-1"
-                        htmlFor="actionConfigName"
-                      >
-                        {' '}
-                        Name (ID) <span className="text-red-500">*</span>{' '}
-                      </label>{' '}
-                      <input
-                        id="actionConfigName"
-                        type="text"
-                        value={currentActionConfig.name || ''}
-                        onChange={(e) => handleActionConfigChange('name', e.target.value)}
-                        required
-                        className="block w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm font-mono"
-                        placeholder="e.g., action_ask_name"
-                      />{' '}
-                    </div>{' '}
-                    <div>
-                      {' '}
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Value Type
-                      </label>{' '}
-                      <div className="flex gap-2">
-                        {' '}
-                        <button
-                          onClick={() => handleValueTypeToggle('text')}
-                          className={`flex items-center gap-1 px-3 py-1 rounded border text-sm transition-colors ${currentValueInputType === 'text' ? 'bg-green-100 border-green-300 text-green-800 font-medium' : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'}`}
-                        >
-                          {' '}
-                          <Type size={14} /> Text{' '}
-                        </button>{' '}
-                        <button
-                          onClick={() => handleValueTypeToggle('function')}
-                          className={`flex items-center gap-1 px-3 py-1 rounded border text-sm transition-colors ${currentValueInputType === 'function' ? 'bg-green-100 border-green-300 text-green-800 font-medium' : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'}`}
-                        >
-                          {' '}
-                          <GitBranch size={14} /> Function{' '}
-                        </button>{' '}
-                      </div>{' '}
-                    </div>{' '}
-                    {currentValueInputType === 'text' ? (
-                      <div>
-                        {' '}
-                        <label
-                          className="block text-sm font-medium text-gray-700 mb-1"
-                          htmlFor="actionConfigValueText"
-                        >
-                          {' '}
-                          Text Value{' '}
-                        </label>{' '}
-                        <textarea
-                          id="actionConfigValueText"
-                          value={currentActionConfig.value || ''}
-                          onChange={(e) => handleActionConfigChange('value', e.target.value)}
-                          className="block w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm font-mono"
-                          placeholder="Enter text, JSON, URL, etc."
-                          rows={4}
-                        />{' '}
-                      </div>
-                    ) : (
-                      <div>
-                        {' '}
-                        <label
-                          className="block text-sm font-medium text-gray-700 mb-1"
-                          htmlFor="actionConfigValueFunction"
-                        >
-                          {' '}
-                          Select Function{' '}
-                        </label>{' '}
-                        <select
-                          id="actionConfigValueFunction"
-                          value={currentActionConfig.value || ''}
-                          onChange={(e) => handleActionConfigChange('value', e.target.value)}
-                          className="block w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm"
-                        >
-                          {' '}
-                          <option value="" disabled>
-                            Select function
-                          </option>{' '}
-                          {mockAvailableFunctions.length === 0 && (
-                            <option disabled>No functions available</option>
-                          )}{' '}
-                          {mockAvailableFunctions.map((func) => (
-                            <option key={func.name} value={func.name} title={func.description}>
-                              {func.name}
-                            </option>
-                          ))}{' '}
-                          {currentActionConfig.value &&
-                            !mockAvailableFunctions.some(
-                              (f) => f.name === currentActionConfig.value
-                            ) && (
-                              <option value={currentActionConfig.value}>
-                                {currentActionConfig.value} (Current/Unknown)
-                              </option>
-                            )}{' '}
-                        </select>{' '}
-                        <p className="text-xs text-gray-500 mt-1 h-4 truncate">
-                          {' '}
-                          {
-                            mockAvailableFunctions.find((f) => f.name === currentActionConfig.value)
-                              ?.description
-                          }{' '}
-                        </p>{' '}
-                      </div>
-                    )}{' '}
-                    <div className="flex gap-2 pt-3 border-t border-green-100">
-                      {' '}
-                      <button
-                        onClick={handleActionEditSave}
-                        className="flex-1 flex items-center justify-center gap-2 bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 text-sm font-medium"
-                      >
-                        {' '}
-                        <Check size={16} /> Save{' '}
-                      </button>{' '}
-                      <button
-                        onClick={() => handleSetMode('view')}
-                        className="flex-1 flex items-center justify-center gap-2 bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 text-sm font-medium"
-                      >
-                        {' '}
-                        Cancel{' '}
-                      </button>{' '}
-                    </div>{' '}
-                  </div>
-                )}
-              </div>
-            )}
+                     )}
+                     {/* Function Select Area */}
+                    {currentValueInputType === 'function' && (
+                        <div>
+                             <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="actionConfigValueFunction"> Select Function <span className="text-red-500">*</span> </label>
+                             <select id="actionConfigValueFunction" value={currentActionConfig.value || ''} onChange={(e) => handleActionConfigChange('functionValue', e.target.value)} required className="block w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm">
+                                <option value="" disabled>-- Select function --</option>
+                                {mockAvailableFunctions.map((func) => ( <option key={func.name} value={func.name} title={func.description}>{func.name}</option> ))}
+                                {currentActionConfig.value && !mockAvailableFunctions.some(f => f.name === currentActionConfig.value) && ( <option value={currentActionConfig.value} disabled> {currentActionConfig.value} (Current/Invalid) </option> )}
+                             </select>
+                            <p className="text-xs text-gray-500 mt-1 h-4 truncate" title={mockAvailableFunctions.find(f => f.name === currentActionConfig.value)?.description}> {mockAvailableFunctions.find(f => f.name === currentActionConfig.value)?.description} </p>
+                        </div>
+                    )}
+                    <div className="flex gap-2 pt-3 border-t border-green-100"> <button onClick={handleActionEditSave} className="flex-1 btn btn-primary btn-sm" disabled={!currentActionConfig.name}> <Check size={16} /> Save </button> <button onClick={() => handleSetMode('view')} className="flex-1 btn btn-secondary btn-sm"> Cancel </button> </div>
+                </div> )}
+            </div> )}
           </>
         )}
-      </div>{' '}
-      {/* End Content Area */}
-      {/* --- DIALOGS --- */}
-      {showIntentDialog && (
-        /* ... keep existing Intent Dialog ... */ <div className="fixed inset-0 bg-black bg-opacity-40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          {' '}
-          <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-lg relative max-h-[90vh] flex flex-col">
-            {' '}
-            <div className="flex justify-between items-center border-b pb-3 mb-4 flex-shrink-0">
-              {' '}
-              <h4 className="text-lg font-semibold text-blue-800 flex items-center gap-2">
-                <PlusCircle size={18} /> Define New Intent
-              </h4>{' '}
-              <button
-                onClick={() => setShowIntentDialog(false)}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X size={20} />
-              </button>{' '}
-            </div>{' '}
-            <div className="space-y-4 overflow-y-auto pr-2 flex-grow scrollbar-thin scrollbar-thumb-gray-300 hover:scrollbar-thumb-gray-400">
-              {' '}
-              <div>
-                {' '}
-                <label
-                  htmlFor="newIntentLabel"
-                  className="block text-sm font-medium text-gray-700 mb-1"
-                >
-                  Label <span className="text-red-500">*</span>
-                </label>{' '}
-                <input
-                  type="text"
-                  id="newIntentLabel"
-                  value={newIntentLabel}
-                  onChange={(e) => setNewIntentLabel(e.target.value)}
-                  required
-                  className="w-full border border-gray-300 rounded-md p-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm text-sm"
-                  placeholder="User-friendly label (e.g., Greet User)"
-                />{' '}
-              </div>{' '}
-              <div>
-                {' '}
-                <label
-                  htmlFor="newIntentId"
-                  className="block text-sm font-medium text-gray-700 mb-1"
-                >
-                  ID <span className="text-red-500">*</span>
-                </label>{' '}
-                <input
-                  type="text"
-                  id="newIntentId"
-                  value={newIntentId}
-                  onChange={(e) => setNewIntentId(e.target.value)}
-                  required
-                  className="w-full border border-gray-300 rounded-md p-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm text-sm font-mono"
-                  placeholder="Code-friendly ID (e.g., intent_greet)"
-                />{' '}
-                <p className="text-xs text-gray-500 mt-1">
-                  Use lowercase_underscores. Sanitized on save.
-                </p>{' '}
-              </div>{' '}
-              <div>
-                {' '}
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Examples
-                </label>{' '}
-                {newIntentExamples.map((example, index) => (
-                  <div key={index} className="mt-1 flex items-center gap-2">
-                    {' '}
-                    <input
-                      type="text"
-                      value={example}
-                      onChange={(e) => handleNewIntentExampleChange(index, e.target.value)}
-                      className="flex-grow border border-gray-300 rounded-md p-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm text-sm"
-                      placeholder={`Example ${index + 1}`}
-                    />{' '}
-                    <button
-                      onClick={() => handleRemoveNewIntentExample(index)}
-                      type="button"
-                      className={`p-1 text-red-500 hover:text-red-700 rounded-full hover:bg-red-100 flex-shrink-0 ${newIntentExamples.length <= 1 ? 'invisible' : ''}`}
-                      title="Remove example"
-                    >
-                      <X size={16} />
-                    </button>{' '}
-                  </div>
-                ))}{' '}
-                <button
-                  onClick={handleAddIntentExampleInput}
-                  type="button"
-                  className="mt-2 text-blue-600 hover:text-blue-800 text-sm flex items-center gap-1"
-                >
-                  <PlusCircle size={16} /> Add Example
-                </button>{' '}
-              </div>{' '}
-            </div>{' '}
-            <div className="flex justify-end gap-3 border-t pt-4 mt-4 flex-shrink-0">
-              {' '}
-              <button
-                onClick={() => setShowIntentDialog(false)}
-                className="bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 text-sm font-medium"
-              >
-                Cancel
-              </button>{' '}
-              <button
-                onClick={handleIntentDialogSubmit}
-                className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm font-medium flex items-center gap-1.5"
-              >
-                <Check size={16} /> Create Intent
-              </button>{' '}
-            </div>{' '}
-          </div>{' '}
-        </div>
-      )}
-      {showActionDialog && (
-        /* ... keep existing Action Dialog ... */ <div className="fixed inset-0 bg-black bg-opacity-40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          {' '}
-          <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-lg relative max-h-[90vh] flex flex-col">
-            {' '}
-            <div className="flex justify-between items-center border-b pb-3 mb-4 flex-shrink-0">
-              {' '}
-              <h4 className="text-lg font-semibold text-green-800 flex items-center gap-2">
-                <PlusCircle size={18} /> Define New Action
-              </h4>{' '}
-              <button
-                onClick={() => setShowActionDialog(false)}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X size={20} />
-              </button>{' '}
-            </div>{' '}
-            <div className="space-y-4 overflow-y-auto pr-2 flex-grow scrollbar-thin scrollbar-thumb-gray-300 hover:scrollbar-thumb-gray-400">
-              {' '}
-              <div>
-                {' '}
-                <label
-                  htmlFor="newActionTitle"
-                  className="block text-sm font-medium text-gray-700 mb-1"
-                >
-                  Title
-                </label>{' '}
-                <input
-                  type="text"
-                  id="newActionTitle"
-                  value={newActionTitle}
-                  onChange={(e) => setNewActionTitle(e.target.value)}
-                  className="w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm"
-                  placeholder="User-friendly title (optional)"
-                />{' '}
-              </div>{' '}
-              <div>
-                {' '}
-                <label
-                  htmlFor="newActionName"
-                  className="block text-sm font-medium text-gray-700 mb-1"
-                >
-                  Name (ID) <span className="text-red-500">*</span>
-                </label>{' '}
-                <input
-                  type="text"
-                  id="newActionName"
-                  value={newActionName}
-                  onChange={(e) => setNewActionName(e.target.value)}
-                  required
-                  className="w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm font-mono"
-                  placeholder="e.g., action_send_message"
-                />{' '}
-                <p className="text-xs text-gray-500 mt-1">
-                  Use lowercase_underscores. Sanitized on save.
-                </p>{' '}
-              </div>{' '}
-              <div>
-                {' '}
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Value Type
-                </label>{' '}
-                <div className="flex gap-2">
-                  {' '}
-                  <button
-                    onClick={() => handleNewActionValueTypeToggle('text')}
-                    className={`flex items-center gap-1 px-3 py-1 rounded border text-sm transition-colors ${newActionValueType === 'text' ? 'bg-green-100 border-green-300 text-green-800 font-medium' : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'}`}
-                  >
-                    <Type size={14} /> Text
-                  </button>{' '}
-                  <button
-                    onClick={() => handleNewActionValueTypeToggle('function')}
-                    className={`flex items-center gap-1 px-3 py-1 rounded border text-sm transition-colors ${newActionValueType === 'function' ? 'bg-green-100 border-green-300 text-green-800 font-medium' : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'}`}
-                  >
-                    <GitBranch size={14} /> Function
-                  </button>{' '}
-                </div>{' '}
-              </div>{' '}
-              {newActionValueType === 'text' ? (
-                <div>
-                  {' '}
-                  <label
-                    htmlFor="newActionValueText"
-                    className="block text-sm font-medium text-gray-700 mb-1"
-                  >
-                    Text Value
-                  </label>{' '}
-                  <textarea
-                    id="newActionValueText"
-                    value={newActionValue}
-                    onChange={(e) => setNewActionValue(e.target.value)}
-                    className="w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm font-mono"
-                    placeholder="Enter text, JSON, URL, etc."
-                    rows={4}
-                  />{' '}
-                </div>
-              ) : (
-                <div>
-                  {' '}
-                  <label
-                    htmlFor="newActionValueFunc"
-                    className="block text-sm font-medium text-gray-700 mb-1"
-                  >
-                    Select Function
-                  </label>{' '}
-                  <select
-                    id="newActionValueFunc"
-                    value={newActionValue}
-                    onChange={(e) => setNewActionValue(e.target.value)}
-                    className="w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm"
-                  >
-                    {' '}
-                    <option value="" disabled>
-                      Select function
-                    </option>{' '}
-                    {mockAvailableFunctions.length === 0 && (
-                      <option disabled>No functions available</option>
-                    )}{' '}
-                    {mockAvailableFunctions.map((func) => (
-                      <option key={func.name} value={func.name} title={func.description}>
-                        {func.name}
-                      </option>
-                    ))}{' '}
-                  </select>{' '}
-                  <p className="text-xs text-gray-500 mt-1 h-4 truncate">
-                    {mockAvailableFunctions.find((f) => f.name === newActionValue)?.description}
-                  </p>{' '}
-                </div>
-              )}{' '}
-            </div>{' '}
-            <div className="flex justify-end gap-3 border-t pt-4 mt-4 flex-shrink-0">
-              {' '}
-              <button
-                onClick={() => setShowActionDialog(false)}
-                className="bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 text-sm font-medium"
-              >
-                Cancel
-              </button>{' '}
-              <button
-                onClick={handleActionDialogSubmit}
-                className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 text-sm font-medium flex items-center gap-1.5"
-              >
-                <Check size={16} /> Create Action
-              </button>{' '}
-            </div>{' '}
-          </div>{' '}
-        </div>
-      )}
-      {/* Global Styles - Removed fadeIn keyframes as class is removed */}
+      </div>
+
+        {/* --- DIALOGS --- */}
+        {/* Define New Intent Dialog (Unchanged Structure) */}
+        {showIntentDialog && ( <div className="fixed inset-0 bg-black bg-opacity-40 backdrop-blur-sm flex items-center justify-center z-50 p-4"> <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-lg relative max-h-[90vh] flex flex-col">
+            <div className="flex justify-between items-center border-b pb-3 mb-4 flex-shrink-0"> <h4 className="text-lg font-semibold text-blue-800 flex items-center gap-2"><PlusCircle size={18} /> Define New Intent</h4> <button onClick={() => setShowIntentDialog(false)} className="text-gray-400 hover:text-gray-600"> <X size={20} /> </button> </div>
+            <div className="space-y-4 overflow-y-auto pr-2 flex-grow scrollbar-thin">
+                <div> <label htmlFor="newIntentLabel" className="block text-sm font-medium text-gray-700 mb-1"> Label <span className="text-red-500">*</span> </label> <input type="text" id="newIntentLabel" value={newIntentLabel} onChange={(e) => setNewIntentLabel(e.target.value)} required className="w-full input input-bordered input-sm" placeholder="e.g., Check Balance"/> </div>
+                <div> <label htmlFor="newIntentId" className="block text-sm font-medium text-gray-700 mb-1"> ID <span className="text-red-500">*</span> </label> <input type="text" id="newIntentId" value={newIntentId} onChange={(e) => setNewIntentId(e.target.value)} required className="w-full input input-bordered input-sm font-mono" placeholder="e.g., intent_check_balance"/> <p className="text-xs text-gray-500 mt-1"> Use lowercase_underscores. </p> </div>
+                <div> <label className="block text-sm font-medium text-gray-700 mb-1"> Examples </label> <p className="text-xs text-gray-500 mb-2"> Use <code className="text-xs">[value](entity)</code> format. </p> <div className="space-y-2 max-h-48 overflow-y-auto pr-1 scrollbar-thin"> {newIntentExamples.map((example, index) => ( <div key={index} className="flex items-center gap-2"> <input type="text" value={example} onChange={(e) => handleNewIntentExampleChange(index, e.target.value)} className="flex-grow input input-bordered input-sm" placeholder={`Example ${index + 1}`}/> <button onClick={() => handleRemoveNewIntentExample(index)} type="button" disabled={newIntentExamples.length <= 1 && example === ''} className={`btn btn-ghost btn-xs p-1 text-red-500 ${newIntentExamples.length <= 1 ? 'invisible' : ''}`} title="Remove"> <X size={16} /> </button> </div> ))} </div> <button onClick={handleAddIntentExampleInput} type="button" className="mt-2 text-blue-600 hover:text-blue-800 text-sm flex items-center gap-1"> <PlusCircle size={16} /> Add Example </button> </div>
+            </div>
+            <div className="flex justify-end gap-3 border-t pt-4 mt-4 flex-shrink-0"> <button onClick={() => setShowIntentDialog(false)} className="btn btn-secondary btn-sm"> Cancel </button> <button onClick={handleIntentDialogSubmit} className="btn btn-primary btn-sm"> <Check size={16} /> Create Intent </button> </div>
+        </div> </div> )}
+
+      {/* Define New Action Dialog (UPDATED for Variations) */}
+       {showActionDialog && ( <div className="fixed inset-0 bg-black bg-opacity-40 backdrop-blur-sm flex items-center justify-center z-50 p-4"> <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-lg relative max-h-[90vh] flex flex-col">
+            <div className="flex justify-between items-center border-b pb-3 mb-4 flex-shrink-0"> <h4 className="text-lg font-semibold text-green-800 flex items-center gap-2"> <PlusCircle size={18} /> Define New Action </h4> <button onClick={() => setShowActionDialog(false)} className="text-gray-400 hover:text-gray-600"> <X size={20} /> </button> </div>
+             {/* Dialog Body */}
+            <div className="space-y-4 overflow-y-auto pr-2 flex-grow scrollbar-thin">
+                <div> <label htmlFor="newActionTitle" className="block text-sm font-medium text-gray-700 mb-1"> Title <span className="text-gray-400 text-xs">(optional)</span> </label> <input type="text" id="newActionTitle" value={newActionTitle} onChange={(e) => setNewActionTitle(e.target.value)} className="w-full input input-bordered input-sm" placeholder="Display title"/> </div>
+                <div> <label htmlFor="newActionName" className="block text-sm font-medium text-gray-700 mb-1"> Name (ID) <span className="text-red-500">*</span> </label> <input type="text" id="newActionName" value={newActionName} onChange={(e) => setNewActionName(e.target.value)} required className="w-full input input-bordered input-sm font-mono" placeholder="e.g., action_lookup or utter_greet"/> <p className="text-xs text-gray-500 mt-1"> Use lowercase_underscores. </p> </div>
+                <div> <label className="block text-sm font-medium text-gray-700 mb-1">Value Type</label> <div className="flex gap-2"> <button onClick={() => handleNewActionValueTypeToggle('text')} className={`btn-sm btn-toggle ${newActionValueType === 'text' ? 'active' : ''}`}> <Type size={14} /> Text/Variations </button> <button onClick={() => handleNewActionValueTypeToggle('function')} className={`btn-sm btn-toggle ${newActionValueType === 'function' ? 'active' : ''}`}> <GitBranch size={14} /> Function </button> </div> </div>
+                 {/* Variations Input for Dialog */}
+                {newActionValueType === 'text' ? (
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1"> Response Variations <span className="text-red-500">*</span></label>
+                        <div className="space-y-2 max-h-48 overflow-y-auto pr-1 scrollbar-thin border border-gray-200 bg-white p-2 rounded">
+                            {newActionVariations.map((variation, index) => (
+                                <div key={index} className="flex items-center gap-2">
+                                    <textarea value={variation} onChange={(e) => handleNewActionVariationChange(index, e.target.value)} className="flex-grow textarea textarea-bordered textarea-xs" placeholder={`Variation ${index + 1}`} rows={2}/>
+                                    <button onClick={() => handleRemoveNewActionVariationInput(index)} type="button" disabled={newActionVariations.length <= 1} className={`btn btn-ghost btn-xs p-1 text-red-500 disabled:text-gray-400 ${newActionVariations.length <= 1 ? '' : 'hover:bg-red-100'}`} title="Remove"> <Trash2 size={16} /> </button>
+                                </div>
+                            ))}
+                        </div>
+                        <button onClick={handleAddNewActionVariationInput} type="button" className="mt-2 text-green-600 hover:text-green-800 text-sm flex items-center gap-1"> <PlusCircle size={16} /> Add Variation </button>
+                    </div>
+                 ) : ( // Function Select for Dialog
+                     <div>
+                        <label htmlFor="newActionValueFunc" className="block text-sm font-medium text-gray-700 mb-1"> Select Function <span className="text-red-500">*</span> </label>
+                        <select id="newActionValueFunc" value={newActionFunctionValue} onChange={(e) => setNewActionFunctionValue(e.target.value)} required className="w-full select select-bordered select-sm">
+                            <option value="" disabled>-- Select function --</option>
+                            {mockAvailableFunctions.map((func) => ( <option key={func.name} value={func.name} title={func.description}>{func.name}</option> ))}
+                         </select>
+                        <p className="text-xs text-gray-500 mt-1 h-4 truncate" title={mockAvailableFunctions.find(f => f.name === newActionFunctionValue)?.description}> {mockAvailableFunctions.find(f => f.name === newActionFunctionValue)?.description} </p>
+                     </div>
+                 )}
+            </div>
+            {/* Dialog Footer */}
+            <div className="flex justify-end gap-3 border-t pt-4 mt-4 flex-shrink-0"> <button onClick={() => setShowActionDialog(false)} className="btn btn-secondary btn-sm"> Cancel </button> <button onClick={handleActionDialogSubmit} className="btn btn-primary btn-sm"> <Check size={16} /> Create Action </button> </div>
+        </div> </div> )}
+
+      {/* Global Styles & CSS Variables */}
       <style jsx global>{`
-        /* Basic scrollbar styling */
-        .scrollbar-thin {
-          scrollbar-width: thin;
-          scrollbar-color: #cbd5e0 #edf2f7; /* thumb track */
-        }
-        .scrollbar-thin::-webkit-scrollbar {
-          width: 8px;
-          height: 8px;
-        }
-        .scrollbar-thin::-webkit-scrollbar-track {
-          background: #edf2f7;
-          border-radius: 4px;
-        }
-        .scrollbar-thin::-webkit-scrollbar-thumb {
-          background-color: #cbd5e0;
-          border-radius: 4px;
-          border: 2px solid #edf2f7;
-        }
-        .hover\\:scrollbar-thumb-gray-400:hover::-webkit-scrollbar-thumb {
-          background-color: #a0aec0;
-        }
+        .scrollbar-thin { scrollbar-width: thin; scrollbar-color: #cbd5e0 #edf2f7; }
+        .scrollbar-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+        .scrollbar-thin::-webkit-scrollbar-track { background: #edf2f7; border-radius: 4px; }
+        .scrollbar-thin::-webkit-scrollbar-thumb { background-color: #cbd5e0; border-radius: 4px; border: 2px solid #edf2f7; }
+        .hover\\:scrollbar-thumb-gray-400:hover::-webkit-scrollbar-thumb { background-color: #a0aec0; }
+        .btn-sm { padding: 0.25rem 0.75rem; font-size: 0.875rem; border-radius: 0.25rem; transition: background-color 0.2s, border-color 0.2s; display: inline-flex; align-items: center; justify-content: center; gap: 0.25rem; font-weight: 500; }
+        .btn-secondary { background-color: #e5e7eb; color: #374151; border: 1px solid #d1d5db; }
+        .btn-secondary:hover { background-color: #d1d5db; }
+        .btn-primary { background-color: #4f46e5; color: white; border: 1px solid transparent; }
+        .btn-primary:hover { background-color: #4338ca; }
+        .btn-primary:disabled { background-color: #a5b4fc; cursor: not-allowed; }
+        .btn-toggle { background-color: white; border: 1px solid #d1d5db; color: #4b5563; }
+        .btn-toggle:hover { background-color: #f9fafb; }
+        .btn-toggle.active { background-color: #e0f2fe; border-color: #7dd3fc; color: #0369a1; font-weight: 500; }
+        .btn-ghost { background-color: transparent; border: none; }
+        .btn { /* Base button styles if not using a UI library */ }
+        .input, .textarea, .select { display: block; width: 100%; border-radius: 0.375rem; border: 1px solid #d1d5db; padding: 0.5rem 0.75rem; font-size: 0.875rem; line-height: 1.25rem; box-shadow: inset 0 1px 2px 0 rgb(0 0 0 / 0.05); }
+        .input:focus, .textarea:focus, .select:focus { outline: 2px solid transparent; outline-offset: 2px; border-color: #60a5fa; box-shadow: 0 0 0 2px #bfdbfe; }
+        .input-sm, .textarea-sm, .select-sm { padding-top: 0.25rem; padding-bottom: 0.25rem; font-size: 0.875rem; line-height: 1.25rem; } /* Adjust padding/font for sm */
+        .textarea-xs { font-size: 0.75rem; line-height: 1rem; padding: 0.25rem 0.5rem; }
+        .input-bordered, .textarea-bordered, .select-bordered { /* Add specific border styles if needed */ }
+         /* Add any other specific styles for DaisyUI/Tailwind Forms if used */
       `}</style>
-    </div> // End Root Sidebar Div
+    </div>
   );
 };
 
 export default Sidebar;
 
-
 ./src/components/nodes/ActionNode.tsx
 import React from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
-import { Zap, GitBranch } from 'lucide-react'; // Import GitBranch icon
+import { Zap, GitBranch, MessageSquarePlus } from 'lucide-react'; // Import icons
 import { motion } from 'framer-motion';
+import { ActionNodeData } from '../../types'; // Import the specific data type
 
-// Updated data structure for Action Nodes
-interface ActionNodeData {
-  title: string; // User-friendly title
-  name: string; // Action identifier (e.g., SendMessage, ApiCall)
-  value: string; // The actual text value or the selected function name
-  valueType: 'text' | 'function'; // Type indicator
-}
-
-const ActionNode: React.FC<NodeProps<ActionNodeData>> = ({ data, selected }) => {
+const ActionNode: React.FC<NodeProps<ActionNodeData>> = ({ data, selected, id }) => {
   const isFunction = data.valueType === 'function';
+  const variationsCount = data.variations?.length || 0;
+  // Determine display value: function name or first variation/fallback
+  const displayValue = isFunction
+    ? data.value // Show function name if it exists
+    : data.variations?.[0] || '(No variations)'; // Show first variation or a placeholder
+
+  const titleText = data.title || data.name || '(Untitled)';
+  const nameText = data.name || '(No Name)';
 
   return (
     <motion.div
-      className={`bg-white border-2 ${selected ? 'border-green-500 shadow-lg' : 'border-green-300'} rounded-lg shadow-md p-4 w-60 transition-colors duration-150 ease-in-out`}
-      initial={{ scale: 1 }}
-      animate={{ scale: selected ? 1.03 : 1 }}
-      transition={{ type: 'spring', stiffness: 300, damping: 20 }}
+      className={`bg-white border-2 ${selected ? 'border-green-500 shadow-lg scale-[1.02]' : 'border-green-300'} rounded-lg shadow-md p-4 w-60 transition-all duration-150 ease-in-out`}
+      key={id} // Add key for potential animation on node change
     >
       <Handle
         type="target"
         position={Position.Left}
-        className="w-3 h-3 !bg-green-500 !border-white !border-2 rounded-full -left-2 top-1/2 transform -translate-y-1/2"
+        className="w-3 h-3 !bg-green-500 !border-white !border-2 rounded-full -left-[7px] top-1/2 transform -translate-y-1/2"
       />
-      <div className="flex items-center justify-between mb-3 pb-2 border-b border-green-200">
-        <div className="flex items-center">
-          <div className="p-1.5 bg-green-100 rounded-full mr-2">
+      {/* Node Header */}
+      <div className="flex items-center justify-between mb-2 pb-2 border-b border-green-100">
+        <div className="flex items-center gap-2">
+          <div className="p-1.5 bg-green-100 rounded-full">
             <Zap className="w-4 h-4 text-green-600" />
           </div>
-          <strong className="text-green-800 font-semibold">Action</strong>
+          <strong className="text-green-800 font-semibold text-sm">Action</strong>
         </div>
-        {/* Function Indicator - Using GitBranch icon */}
-        {isFunction && (
-          <div className="p-1 bg-gray-100 rounded-full" title="Uses a function">
-            <GitBranch className="w-3 h-3 text-gray-600" />
-          </div>
-        )}
+        {/* Indicator: Function or Variations Count */}
+        <div className="flex items-center gap-1 text-xs text-gray-500" title={isFunction ? `Function: ${data.value || 'Not set'}` : `${variationsCount} variations`}>
+            {isFunction ? (
+                <GitBranch className="w-3 h-3" />
+            ) : (
+                 <>
+                    <MessageSquarePlus className="w-3 h-3" />
+                    <span>{variationsCount}</span>
+                 </>
+            )}
+        </div>
       </div>
+      {/* Display Title */}
       <div className="text-sm mb-1 text-gray-600">
-        Title: <span className="font-medium text-gray-800">{data.title || data.name}</span>
+        Title: <span className="font-medium text-gray-800 truncate" title={titleText}>{titleText}</span>
       </div>
-      <div className="text-sm mb-1 text-gray-600">
-        Name: <span className="font-medium text-green-700">{data.name}</span>
+      {/* Display Name */}
+      <div className="text-sm mb-2 text-gray-600">
+        Name: <code className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded truncate inline-block max-w-full" title={nameText}>{nameText}</code>
       </div>
-      <div className="text-sm text-gray-600">
-        {isFunction ? 'Function:' : 'Value:'}
-        {/* Consistent styling for value code block */}
-        <code
-          className="block bg-green-100 text-green-700 px-1.5 py-0.5 rounded text-xs break-words mt-1"
-          title={data.value}
-        >
-          {data.value}
-        </code>
-      </div>
+       {/* Display Preview Value */}
+       <div className="text-xs text-gray-500">
+            {isFunction ? 'Function:' : 'Preview:'}
+       </div>
+       <div
+            className="block bg-green-50 border border-green-200 text-green-800 px-1.5 py-1 rounded text-xs break-words mt-1 max-h-16 overflow-hidden text-ellipsis whitespace-pre-wrap" // Allow wrapping
+            title={displayValue} // Show full value on hover
+       >
+         {displayValue}
+       </div>
       <Handle
         type="source"
         position={Position.Right}
-        className="w-3 h-3 !bg-green-500 !border-white !border-2 rounded-full -right-2 top-1/2 transform -translate-y-1/2"
+        className="w-3 h-3 !bg-green-500 !border-white !border-2 rounded-full -right-[7px] top-1/2 transform -translate-y-1/2"
       />
     </motion.div>
   );
 };
 
 export default ActionNode;
-
 
 ./src/components/nodes/EndNode.tsx
 import React from 'react';
@@ -2684,54 +2354,53 @@ export default EndNode;
 ./src/components/nodes/IntentNode.tsx
 import React from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
-import { Bot } from 'lucide-react';
+import { Bot, Tag } from 'lucide-react'; // Import Tag icon
 import { motion } from 'framer-motion';
-import { mockIntents } from '../../data/mockData'; // Import mock data
+// Import the type, we don't need mockIntents here anymore
+import { IntentNodeData } from '../../types';
+// No need to import mockIntents here, data comes from props
 
-// No longer define intents here
-
-interface IntentNodeData {
-  intentId: string;
-  examples?: string[]; // Include examples in the data type
-}
-
-const IntentNode: React.FC<NodeProps<IntentNodeData>> = ({ data, selected }) => {
-  // Find the intent label based on the ID stored in the node's data
-  // Use the imported mockIntents for lookup
-  const currentIntent = mockIntents.find((intent) => intent.id === data.intentId);
-  const displayLabel = currentIntent?.label || data.intentId || 'Unknown Intent';
-  const displayId = data.intentId || 'N/A';
+const IntentNode: React.FC<NodeProps<IntentNodeData>> = ({ data, selected, id }) => {
+  // Data should contain intentId, examples, and entities provided by Flow.tsx
+  const displayLabel = data?.label || data?.intentId || '(Unknown)'; // Use label from definition if passed, else ID
+  const displayId = data?.intentId || 'N/A';
+  const entities = data?.entities || [];
+  const examplesCount = data?.examples?.length || 0;
 
   return (
     <motion.div
       className={`bg-white border-2 ${selected ? 'border-blue-500 shadow-lg scale-[1.02]' : 'border-blue-300'} rounded-lg shadow-md p-4 w-60 transition-all duration-150 ease-in-out`}
-      // Animate presence can be added if nodes are dynamically added/removed frequently
-      // initial={{ opacity: 0, scale: 0.8 }}
-      // animate={{ opacity: 1, scale: 1 }}
-      // transition={{ type: "spring", stiffness: 300, damping: 20 }}
+      key={id} // Ensure motion reacts to node changes if needed
     >
       <Handle
         type="target"
         position={Position.Left}
         className="w-3 h-3 !bg-blue-500 !border-white !border-2 rounded-full -left-[7px] top-1/2 transform -translate-y-1/2"
       />
-      <div className="flex items-center mb-3 pb-2 border-b border-blue-200">
-        <div className="p-1.5 bg-blue-100 rounded-full mr-2">
-          <Bot className="w-4 h-4 text-blue-600" />
+      <div className="flex items-center justify-between mb-2 pb-2 border-b border-blue-200">
+        <div className="flex items-center gap-2">
+          <div className="p-1.5 bg-blue-100 rounded-full">
+            <Bot className="w-4 h-4 text-blue-600" />
+          </div>
+          <strong className="text-blue-800 font-semibold text-sm">Intent</strong>
         </div>
-        <strong className="text-blue-800 font-semibold">Intent</strong>
+         {/* Show entity count */}
+         {entities.length > 0 && (
+            <div className="flex items-center gap-1 text-xs text-gray-500" title={`${entities.length} entities: ${entities.join(', ')}`}>
+                <Tag size={12} />
+                <span>{entities.length}</span>
+            </div>
+         )}
       </div>
-      <div className="text-sm mb-1 text-gray-600">Selected Intent:</div>
-      <div className="text-sm font-medium text-blue-700 mb-2 truncate" title={displayLabel}>
+      <div className="text-sm font-medium text-blue-700 mb-1 truncate" title={displayLabel}>
         {displayLabel}
       </div>
-      <div className="text-xs text-gray-500">
+      <div className="text-xs text-gray-500 mb-2">
         ID: <code className="bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">{displayId}</code>
       </div>
-      {/* Optional: Display a hint if examples exist but aren't shown */}
-      {/* {data.examples && data.examples.length > 0 && (
-          <div className="text-xs text-gray-400 mt-1 italic">(Has examples)</div>
-      )} */}
+       <div className="text-xs text-gray-400 mt-1 italic">
+         {examplesCount} {examplesCount === 1 ? 'example' : 'examples'}
+      </div>
       <Handle
         type="source"
         position={Position.Right}
@@ -2742,7 +2411,6 @@ const IntentNode: React.FC<NodeProps<IntentNodeData>> = ({ data, selected }) => 
 };
 
 export default IntentNode;
-
 
 ./src/components/nodes/StartNode.tsx
 import React from 'react';
@@ -2798,139 +2466,232 @@ import {
   ActionNodeData,
   EndNodeData,
 } from '../types'; // Import specific data types
+import { parseEntitiesFromExamples } from '../utils/entityParser'; // Import helper
 
 // --- React Flow Initial State ---
 
-// Explicitly type initialNodes using the specific data types
-export const initialNodes: Node<StartNodeData | IntentNodeData | ActionNodeData | EndNodeData>[] = [
-  {
-    id: '0',
-    type: 'start',
-    position: { x: 50, y: 200 },
-    data: { storyName: 'Default Start Story' }, // Added default story name
-  },
-  {
-    id: '1',
-    type: 'intent',
-    position: { x: 300, y: 200 },
-    data: { intentId: 'intent_greet', examples: ['hello', 'hi', 'hey'] },
-  },
-  {
-    id: '2',
-    type: 'action',
-    position: { x: 550, y: 200 },
-    data: {
-      title: 'Send Greeting',
-      name: 'utter_message',
-      value: 'Hello! How can I help you today?',
-      valueType: 'text',
-    },
-  },
-  {
-    id: '3',
-    type: 'end',
-    position: { x: 800, y: 200 },
-    data: {}, // End node still has no specific data
-  },
-];
+// Helper to populate entities in initial mock data based on examples
+const populateInitialEntities = (intents: Omit<IntentDefinition, 'entities'>[]): IntentDefinition[] => {
+  return intents.map(intent => ({
+    ...intent,
+    entities: parseEntitiesFromExamples(intent.examples || [])
+  }));
+};
 
-export const initialEdges: Edge[] = [
-  {
-    id: 'e0-1',
-    source: '0',
-    target: '1',
-    animated: true,
-    style: { strokeWidth: 2 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#9ca3af' }, // Add marker for consistency
-  },
-  {
-    id: 'e1-2',
-    source: '1',
-    target: '2',
-    animated: true,
-    style: { strokeWidth: 2 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#9ca3af' }, // Add marker for consistency
-  },
-  {
-    id: 'e2-3',
-    source: '2',
-    target: '3',
-    style: { strokeWidth: 2 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#9ca3af' }, // Add marker for consistency
-  },
-];
 
-// --- Mock Definitions ---
-
-export const mockIntents: IntentDefinition[] = [
-  { id: 'intent_greet', label: 'Greeting', examples: ['hello', 'hi', 'hey'] },
-  { id: 'intent_order', label: 'Place Order', examples: ['order', 'buy', 'purchase'] },
-  { id: 'intent_support', label: 'Request Support', examples: ['support', 'help', 'assist'] },
-  { id: 'intent_goodbye', label: 'Goodbye', examples: ['bye', 'goodbye', 'see you'] },
+// Define intents first
+const baseMockIntents: Omit<IntentDefinition, 'entities'>[] = [
+  { id: 'intent_greet', label: 'Greeting', examples: ['hello', 'hi', 'hey', 'good morning'] },
+  {
+    id: 'intent_order',
+    label: 'Place Order',
+    examples: [
+      'I want to order a [pizza](food_item)',
+      'buy one [large soda](drink_item)',
+      'purchase the [special combo](menu_item)',
+      'can I get a [cheeseburger](food_item)?'
+    ]
+  },
+  {
+    id: 'intent_support',
+    label: 'Request Support',
+    examples: ['support needed', 'I need help with my [order](support_topic)', 'assist me please']
+  },
+  { id: 'intent_goodbye', label: 'Goodbye', examples: ['bye', 'goodbye', 'see you later', 'take care'] },
   {
     id: 'intent_faq_shipping',
     label: 'FAQ - Shipping',
-    examples: ['shipping', 'delivery', 'ship'],
+    examples: ['shipping cost', 'delivery time to [London](location)', 'track my [shipment](support_topic)']
   },
-  { id: 'intent_faq_returns', label: 'FAQ - Returns', examples: ['return', 'exchange', 'refund'] },
+  { id: 'intent_faq_returns', label: 'FAQ - Returns', examples: ['return policy', 'exchange process', 'refund status'] },
+  {
+    id: 'intent_provide_info',
+    label: 'Provide Info',
+    examples: [
+        'My account number is [123456789](account_number)',
+        'Use phone [9876543210](phone_number)',
+        'My email is [test@example.com](email_address)',
+        'account [ACC1001](account_number) and phone [555-1212](phone_number)'
+    ]
+  }
 ];
 
+// Populate entities for the final export
+export const mockIntents: IntentDefinition[] = populateInitialEntities(baseMockIntents);
+
+
+// --- Action Definitions (with Variations) ---
 export const mockDefinedActions: ActionDefinition[] = [
-  {
-    title: 'Send Message',
-    name: 'utter_message',
-    value: 'Hello! How can I help you today?',
+   {
+    title: 'Send Greeting Response',
+    name: 'utter_greet_response',
     valueType: 'text',
+    // Use variations array for text types
+    variations: [
+        'Hello there! What can I do for you?',
+        'Hi! How may I help?',
+        'Hey, need assistance with anything?'
+    ],
+    value: 'Hello there! What can I do for you?' // Keep value as first variation maybe? Or remove? Let's keep for now.
   },
   {
-    title: 'API Call',
-    name: 'api_call',
-    value: 'https://api.example.com/data',
+    title: 'Acknowledge Provided Info',
+    name: 'utter_acknowledge_info',
+     valueType: 'text',
+    variations: [
+        'Got it, thanks for the details!',
+        'Okay, I\'ve noted that down.',
+        'Thanks for providing the information.'
+    ],
+     value: 'Got it, thanks for the details!',
+  },
+  {
+    title: 'Ask for Order Details',
+    name: 'utter_ask_order_details',
     valueType: 'text',
+    variations: [ 'Sure, what would you like to order?' ], // Single variation
+    value: 'Sure, what would you like to order?',
+  },
+  {
+    title: 'Provide Shipping Info',
+    name: 'utter_shipping_info',
+    valueType: 'text',
+    variations: [ 'Standard shipping takes 3-5 business days.' ],
+    value: 'Standard shipping takes 3-5 business days.',
+  },
+  {
+    title: 'API Call - Check Order',
+    name: 'action_check_order_api',
+    valueType: 'function',
+    value: 'checkOrderStatus', // Function name goes in value
+    // variations: undefined // No variations for functions
   },
   {
     title: 'Transfer to Agent',
-    name: 'transfer_to_agent',
-    value: 'support_queue',
-    valueType: 'text',
-  },
-  {
-    title: 'Update Context',
-    name: 'update_context',
-    value: '{ "user_status": "verified" }',
-    valueType: 'text',
-  },
-  {
-    title: 'Get User Data',
-    name: 'get_user_data',
-    value: 'getUserData', // Matches a name in mockAvailableFunctions
+    name: 'action_transfer_to_agent',
     valueType: 'function',
+    value: 'transferToSupportQueue',
+    // variations: undefined
+  },
+   {
+    title: 'Send Goodbye Message',
+    name: 'utter_goodbye',
+    valueType: 'text',
+    variations: [
+        'Goodbye! Have a great day.',
+        'See you later!',
+        'Take care!'
+    ],
+    value: 'Goodbye! Have a great day.',
   },
 ];
 
+
+// Explicitly type initialNodes using the specific data types
+// THIS SECTION BUILDS NODES BASED ON ABOVE DEFINITIONS - ENSURE CONSISTENCY
+// Retrieve full definition data for nodes
+const getIntentNodeData = (intentId: string): IntentNodeData => {
+    const intent = mockIntents.find(i => i.id === intentId);
+    return intent
+        ? { intentId: intent.id, examples: intent.examples, entities: intent.entities, label: intent.label }
+        : { intentId: intentId, examples: [], entities: [], label: intentId }; // Fallback
+};
+
+const getActionNodeData = (actionName: string): ActionNodeData => {
+    const action = mockDefinedActions.find(a => a.name === actionName);
+    return action
+        ? { ...action } // Return copy of the definition
+        : { name: actionName, title: actionName, valueType: 'text', variations: ['Action definition not found!'] }; // Fallback
+};
+
+
+export const initialNodes: Node<StartNodeData | IntentNodeData | ActionNodeData | EndNodeData>[] = [
+  {
+    id: '0', type: 'start', position: { x: 50, y: 200 },
+    data: { storyName: 'Greeting Flow', storyId: 'story_greeting', label: 'Greeting Flow' },
+  },
+  {
+    id: '1', type: 'intent', position: { x: 300, y: 150 },
+    data: getIntentNodeData('intent_greet'),
+  },
+  {
+    id: '2', type: 'action', position: { x: 550, y: 150 },
+    data: getActionNodeData('utter_greet_response'),
+  },
+  {
+    id: '3', type: 'end', position: { x: 800, y: 150 }, data: {},
+  },
+  {
+    id: '4', type: 'intent', position: { x: 300, y: 300 },
+    data: getIntentNodeData('intent_provide_info'),
+  },
+  {
+    id: '5', type: 'action', position: { x: 550, y: 300 },
+    data: getActionNodeData('utter_acknowledge_info'),
+  },
+  {
+    id: '6', type: 'end', position: { x: 800, y: 300 }, data: {},
+  },
+  {
+    id: '7', type: 'intent', position: { x: 550, y: 450 },
+    data: getIntentNodeData('intent_goodbye'),
+  },
+  {
+    id: '8', type: 'action', position: { x: 800, y: 450 },
+    data: getActionNodeData('utter_goodbye'),
+  },
+  {
+    id: '9', type: 'end', position: { x: 1050, y: 450 }, data: {},
+  },
+];
+
+
+// Define initial edges separately
+export const initialEdgesData: Omit<Edge, 'id' | 'markerEnd' | 'style' | 'animated'>[] = [
+  { source: '0', target: '1' },
+  { source: '1', target: '2' },
+  { source: '2', target: '3' },
+  { source: '2', target: '4', label: 'User provides info' }, // Example conditional path
+  { source: '4', target: '5' },
+  { source: '5', target: '6' },
+  { source: '5', target: '7', label: 'User says bye' },
+  { source: '7', target: '8' },
+  { source: '8', target: '9' },
+];
+
+// --- Mock Functions (Unchanged) ---
 export const mockAvailableFunctions: AvailableFunction[] = [
-  { name: 'getUserData', description: 'Fetches current user data' },
+  { name: 'checkOrderStatus', description: 'Checks the status of an order via API' },
+  { name: 'transferToSupportQueue', description: 'Transfers the chat to a human agent' },
   { name: 'createSupportTicket', description: 'Creates a new support ticket' },
   { name: 'lookupOrder', description: 'Looks up an order by ID' },
   { name: 'sendConfirmationEmail', description: 'Sends a confirmation email' },
 ];
 
-// --- React Flow Config ---
-
-export const defaultEdgeOptions = {
-  style: { stroke: '#9ca3af', strokeWidth: 2 }, // Added strokeWidth here
+// --- React Flow Config (apply defaultEdgeOptions to initialEdges) ---
+export const defaultEdgeOptions: Partial<Edge> = {
+  style: { stroke: '#9ca3af', strokeWidth: 2 },
   markerEnd: {
     type: MarkerType.ArrowClosed,
     color: '#9ca3af',
-    width: 15, // Slightly smaller marker
+    width: 15,
     height: 15,
   },
-  animated: true, // Make edges animated by default
+  animated: false, // Let's turn off default animation for clarity
 };
 
-// Helper Function
-export const getId = () => `dndnode_${+new Date()}`;
+// Apply default options and generate IDs for initial edges
+export const processedInitialEdges: Edge[] = initialEdgesData.map((edge, index) => ({
+    id: `e${edge.source}-${edge.target}-${index}`, // Generate unique ID
+    ...defaultEdgeOptions, // Apply defaults
+    ...edge, // Spread original edge data (source, target, label)
+    // Ensure markerEnd is an object
+    markerEnd: { ...defaultEdgeOptions.markerEnd }
+}));
 
+
+// Helper Function
+export const getId = () => `dndnode_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`; // More robust ID
 
 ./src/index.css
 @tailwind base;
@@ -2966,6 +2727,30 @@ createRoot(document.getElementById('root')!).render(
 );
 
 
+./src/state/flowAtom.ts
+import { atom } from 'jotai';
+import { Node, Edge } from 'reactflow';
+
+// Load nodes and edges from localStorage or use initial data
+const loadFromLocalStorage = (key: string, fallback: any) => {
+  const storedData = localStorage.getItem(key);
+  return storedData ? JSON.parse(storedData) : fallback;
+};
+
+// Initial nodes and edges
+const initialNodes: Node[] = loadFromLocalStorage('nodes', []);
+const initialEdges: Edge[] = loadFromLocalStorage('edges', []);
+
+// Atoms
+export const NodesAtom = atom<Node[]>(initialNodes);
+export const EdgesAtom = atom<Edge[]>(initialEdges);
+export const isLoadingAtom = atom<boolean>(false);
+export const isBotTrainedAtom = atom<boolean>(false);
+// Optional: selected node/edge atom
+export const selectedNodeAtom = atom<Node | null>(null);
+export const selectedEdgeAtom = atom<Edge | null>(null);
+
+
 ./src/store/flowAtom.ts
 import { atom } from 'jotai';
 import { Node, Edge } from 'reactflow';
@@ -2998,9 +2783,12 @@ export const selectedEdgeAtom = atom<Edge | null>(null);
 export interface ActionDefinition {
   id?: string; // Optional ID, might be added when stored
   title: string;
-  name: string; // Unique identifier
-  value: string; // Text content or function name
+  name: string; // Unique identifier (e.g., utter_greet, action_lookup_db)
   valueType: 'text' | 'function';
+  // Value is used for function name if valueType is 'function'
+  // For text, 'variations' is preferred. 'value' might hold the first variation or be ignored.
+  value?: string;
+  variations?: string[]; // ADDED: For text responses
 }
 
 export interface AvailableFunction {
@@ -3011,20 +2799,26 @@ export interface AvailableFunction {
 export interface IntentDefinition {
   id: string;
   label: string;
-  examples?: string[]; // Added optional examples array
+  examples?: string[];
+  entities?: string[]; // Store unique entity names found in examples
 }
 
 // --- Node Data Types ---
 export interface StartNodeData {
   storyName?: string; // Optional initially, will be added
+  storyId?: string; // Optional story ID
+  label?: string; // Keep label for potential display consistency if needed
 }
 
 export interface IntentNodeData {
   intentId: string;
   examples?: string[];
+  entities?: string[]; // Reflect entities of the linked definition
+  label?: string; // Display label from definition
 }
 
-export interface ActionNodeData extends Omit<ActionDefinition, 'id'> {} // Action node data IS the definition
+// ActionNodeData mirrors ActionDefinition but omits 'id' as it's part of the Node itself
+export interface ActionNodeData extends Omit<ActionDefinition, 'id'> {}
 
 export interface EndNodeData {
   // Currently no specific data needed for EndNode
@@ -3033,6 +2827,49 @@ export interface EndNodeData {
 // Generic Node data type (useful if needed, though specific types are better)
 // export type FlowNodeData = StartNodeData | IntentNodeData | ActionNodeData | EndNodeData | {};
 
+./src/utils/entityParser.ts
+// File: src/utils/entityParser.ts
+
+/**
+ * Parses Rasa NLU entity markdown from examples.
+ * Example format: "My phone is [12345](phone_number)"
+ * @param examples - Array of example strings.
+ * @returns An array of unique entity names found.
+ */
+export function parseEntitiesFromExamples(examples: string[]): string[] {
+    const entityRegex = /\[.*?\]\((.*?)\)/g; // Capture group 1 is the entity name
+    const entities = new Set<string>();
+  
+    examples.forEach(example => {
+      let match;
+      while ((match = entityRegex.exec(example)) !== null) {
+        if (match[1]) { // Ensure the capture group exists and is not empty
+          entities.add(match[1].trim());
+        }
+      }
+    });
+  
+    return Array.from(entities);
+  }
+  
+  /**
+   * Strips Rasa NLU entity markdown from a single example string.
+   * @param example - The example string with potential markdown.
+   * @returns The example string with markdown removed.
+   */
+  export function stripEntities(example: string): string {
+    const entityRegex = /\[(.*?)\]\(.*?\)/g; // Capture group 1 is the value
+    return example.replace(entityRegex, '$1');
+  }
+  
+  /**
+   * Strips Rasa NLU entity markdown from an array of examples.
+   * @param examples - Array of example strings.
+   * @returns Array of examples with markdown removed.
+   */
+  export function stripEntitiesFromExamples(examples: string[]): string[] {
+      return examples.map(stripEntities);
+  }
 
 ./src/vite-env.d.ts
 /// <reference types="vite/client" />

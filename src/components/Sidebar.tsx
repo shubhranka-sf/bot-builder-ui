@@ -18,6 +18,9 @@ import {
   Tag, // Icon for entities
   MessageSquarePlus, // Icon for variations
   Trash2, // Icon for deleting variations
+  ClipboardList, // Icon for Form Node
+  CheckSquare, // Icon for Slots
+  ListChecks, // Icon for multi-select
 } from 'lucide-react';
 import {
   ActionDefinition,
@@ -25,21 +28,22 @@ import {
   StartNodeData,
   IntentNodeData,
   ActionNodeData,
+  FormNodeData, // Import FormNodeData
 } from '../types';
 import { mockAvailableFunctions } from '../data/mockData'; // Functions remain the same
 import { parseEntitiesFromExamples } from '../utils/entityParser'; // Import parser
 import { toast } from 'react-toastify'; // Import toast
 
 interface SidebarProps {
-  selectedNode: Node<StartNodeData | IntentNodeData | ActionNodeData | any> | null;
+  // Update node data type to include FormNodeData
+  selectedNode: Node<StartNodeData | IntentNodeData | ActionNodeData | FormNodeData | any> | null;
   intents: IntentDefinition[]; // Now includes entities
   definedActions: ActionDefinition[]; // Now includes variations
   onUpdateStartNode: (nodeId: string, newStoryName: string, storyId?: string) => void;
   onUpdateIntent: (nodeId: string, newIntentId: string, examples?: string[]) => void;
-  // Update signature to potentially receive variations
   onUpdateAction: (nodeId: string, actionData: Partial<ActionNodeData>) => void;
+  onUpdateForm: (nodeId: string, formData: Partial<FormNodeData>) => void; // Add handler for forms
   onAddNewIntentDefinition: (newIntent: IntentDefinition) => void;
-  // Update signature to potentially receive variations
   onAddNewActionDefinition: (newAction: ActionDefinition) => void;
   onClose: () => void;
 }
@@ -54,12 +58,13 @@ const Sidebar: React.FC<SidebarProps> = ({
   onUpdateStartNode,
   onUpdateIntent,
   onUpdateAction,
+  onUpdateForm, // Destructure new prop
   onAddNewIntentDefinition,
   onAddNewActionDefinition,
   onClose,
 }) => {
   const [mode, setMode] = useState<SidebarMode>('view');
-  const [isChangingDefinition, setIsChangingDefinition] = useState(false);
+  const [isChangingDefinition, setIsChangingDefinition] = useState(false); // Only for intent/action
   const [searchTerm, setSearchTerm] = useState('');
 
   // State for configurations (used ONLY in EDIT mode)
@@ -69,8 +74,12 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [currentValueInputType, setCurrentValueInputType] = useState<ValueInputType>('text');
   const [currentIntentId, setCurrentIntentId] = useState<string>('');
   const [currentExamples, setCurrentExamples] = useState<string[]>([]);
-  // State for Action Text Variations (Edit Mode)
-  const [currentVariations, setCurrentVariations] = useState<string[]>(['']); // Start with one empty
+  const [currentVariations, setCurrentVariations] = useState<string[]>(['']); // Action Text Variations
+
+  // State for Form Node Edit Mode
+  const [currentFormName, setCurrentFormName] = useState<string>('');
+  const [currentFormId, setCurrentFormId] = useState<string>('');
+  const [currentSlots, setCurrentSlots] = useState<string[]>([]);
 
   // State for Dialogs
   const [showIntentDialog, setShowIntentDialog] = useState(false);
@@ -81,9 +90,17 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [newActionTitle, setNewActionTitle] = useState('');
   const [newActionName, setNewActionName] = useState('');
   const [newActionValueType, setNewActionValueType] = useState<ValueInputType>('text');
-  // State for Variations in New Action Dialog
   const [newActionVariations, setNewActionVariations] = useState<string[]>(['']);
   const [newActionFunctionValue, setNewActionFunctionValue] = useState<string>(''); // Separate state for function value
+
+  // Derive available entities from all intents
+  const availableEntities = useMemo(() => {
+    const allEntities = new Set<string>();
+    intents.forEach(intent => {
+      (intent.entities || []).forEach(entity => allEntities.add(entity));
+    });
+    return Array.from(allEntities).sort();
+  }, [intents]);
 
 
   // --- Effects ---
@@ -104,10 +121,8 @@ const Sidebar: React.FC<SidebarProps> = ({
       } else if (selectedNode.type === 'action') {
         const type = nodeData.valueType || 'text';
         setCurrentValueInputType(type);
-        // Initialize variations state specifically based on type and data
         const initialVariations = type === 'text' ? (Array.isArray(nodeData.variations) && nodeData.variations.length > 0 ? [...nodeData.variations] : ['']) : [''];
         setCurrentVariations(initialVariations);
-        // Set basic config, deriving value/variations based on type
         setCurrentActionConfig({
             title: nodeData.title || nodeData.name || '',
             name: nodeData.name || '',
@@ -115,14 +130,20 @@ const Sidebar: React.FC<SidebarProps> = ({
             value: type === 'function' ? nodeData.value || '' : initialVariations[0] || '', // Use first variation or func value
             variations: type === 'text' ? initialVariations : undefined,
         });
+      } else if (selectedNode.type === 'form') { // Initialize form state
+        setCurrentFormName(nodeData.name || '');
+        setCurrentFormId(nodeData.formId || '');
+        setCurrentSlots(Array.isArray(nodeData.slots) ? [...nodeData.slots] : []);
       } else {
          // Reset for other types
         setCurrentStoryName(''); setCurrentStoryId(''); setCurrentIntentId(''); setCurrentExamples([]); setCurrentActionConfig({}); setCurrentValueInputType('text'); setCurrentVariations(['']);
+        setCurrentFormName(''); setCurrentFormId(''); setCurrentSlots([]); // Reset form state too
       }
     } else {
       // Clear everything if no node is selected
        console.log('Sidebar useEffect [no selected node]: Clearing state.');
        setCurrentStoryName(''); setCurrentStoryId(''); setCurrentIntentId(''); setCurrentExamples([]); setCurrentActionConfig({}); setCurrentValueInputType('text'); setCurrentVariations(['']);
+       setCurrentFormName(''); setCurrentFormId(''); setCurrentSlots([]); // Reset form state too
        setMode('view'); setIsChangingDefinition(false); setSearchTerm('');
     }
   }, [selectedNode]); // Dependency only on selectedNode identity
@@ -155,6 +176,10 @@ const Sidebar: React.FC<SidebarProps> = ({
                 value: type === 'function' ? nodeData.value || '' : initialVariations[0] || '',
                 variations: type === 'text' ? initialVariations : undefined,
             });
+        } else if (selectedNode.type === 'form') { // Re-init form state
+           setCurrentFormName(nodeData.name || '');
+           setCurrentFormId(nodeData.formId || '');
+           setCurrentSlots(Array.isArray(nodeData.slots) ? [...nodeData.slots] : []);
         }
       }
     },
@@ -197,9 +222,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   }, [selectedNode, onUpdateIntent, currentIntentId, currentExamples, handleSetMode]);
 
 
-  // --- Action Node Handlers (Edit Mode - Updated for Variations) ---
+  // --- Action Node Handlers (Edit Mode - Unchanged) ---
    const handleActionConfigChange = useCallback(
-    // Now explicitly handles 'functionValue' separately from 'value'
     (field: keyof ActionNodeData | 'functionValue', value: string | ValueInputType) => {
       setCurrentActionConfig((prev) => {
         const newState = { ...prev };
@@ -236,12 +260,10 @@ const Sidebar: React.FC<SidebarProps> = ({
     [currentVariations] // Depend on currentVariations for switching to text type
   );
 
-   // Handler specifically for the value type toggle buttons
    const handleValueTypeToggle = useCallback((type: ValueInputType) => {
       handleActionConfigChange('valueType', type);
    }, [handleActionConfigChange]);
 
-   // Handlers for Variations array in Edit mode
    const handleVariationChange = useCallback((index: number, value: string) => {
        setCurrentVariations(prev => {
            const copy = [...prev];
@@ -261,7 +283,6 @@ const Sidebar: React.FC<SidebarProps> = ({
        });
    }, []);
 
-  // Save handler updated for variations
   const handleActionEditSave = useCallback(() => {
     if (selectedNode?.type === 'action') {
       const finalName = currentActionConfig.name?.trim();
@@ -306,8 +327,40 @@ const Sidebar: React.FC<SidebarProps> = ({
     }
   }, [selectedNode, onUpdateAction, currentActionConfig, currentValueInputType, currentVariations, handleSetMode]);
 
+  // --- Form Node Handlers (Edit Mode) ---
+  const handleFormNameChange = useCallback((newName: string) => setCurrentFormName(newName), []);
+  const handleFormIdChange = useCallback((newId: string) => setCurrentFormId(newId.trim().replace(/\s+/g, '_').toLowerCase()), []);
+  const handleSlotToggle = useCallback((slotName: string) => {
+      setCurrentSlots(prev =>
+          prev.includes(slotName)
+            ? prev.filter(s => s !== slotName)
+            : [...prev, slotName]
+      );
+  }, []);
 
-  // --- Change Definition Handlers (View Mode - Unchanged) ---
+  const handleFormEditSave = useCallback(() => {
+      if (selectedNode?.type === 'form') {
+          const finalName = currentFormName.trim() || `Form_${selectedNode.id.slice(-4)}`;
+          const finalId = currentFormId.trim();
+          if (!finalId) {
+              toast.error('Form ID is required.');
+              return;
+          }
+          if (currentSlots.length === 0) {
+              toast.warn('This form currently has no slots selected.');
+          }
+          const finalData: FormNodeData = {
+              name: finalName,
+              formId: finalId,
+              slots: currentSlots,
+          };
+          onUpdateForm(selectedNode.id, finalData);
+          handleSetMode('view');
+      }
+  }, [selectedNode, onUpdateForm, currentFormName, currentFormId, currentSlots, handleSetMode]);
+
+
+  // --- Change Definition Handlers (View Mode - Only for Action/Intent) ---
   const handleChangeIntentClick = useCallback((newIntentId: string) => {
       if (selectedNode?.type === 'intent') {
         onUpdateIntent(selectedNode.id, newIntentId);
@@ -316,7 +369,6 @@ const Sidebar: React.FC<SidebarProps> = ({
     }, [selectedNode, onUpdateIntent]);
   const handleChangeActionClick = useCallback((newActionName: string) => {
       if (selectedNode?.type === 'action') {
-        // When changing definition, we update the node data using the new definition's data
         const newDef = definedActions.find(a => a.name === newActionName);
         if (newDef) {
              onUpdateAction(selectedNode.id, { ...newDef }); // Pass full new definition data
@@ -325,7 +377,7 @@ const Sidebar: React.FC<SidebarProps> = ({
         }
         setIsChangingDefinition(false); setSearchTerm('');
       }
-    }, [selectedNode, onUpdateAction, definedActions]); // Add definedActions dependency
+    }, [selectedNode, onUpdateAction, definedActions]);
 
   // --- Dialog Handlers ---
    // --- Intent Dialog (Unchanged) ---
@@ -343,20 +395,17 @@ const Sidebar: React.FC<SidebarProps> = ({
         setNewIntentLabel(''); setNewIntentId(''); setNewIntentExamples(['']); setShowIntentDialog(false);
     }, [newIntentLabel, newIntentId, newIntentExamples, intents, onAddNewIntentDefinition]);
 
-   // --- Action Dialog (UPDATED for Variations) ---
+   // --- Action Dialog (Unchanged) ---
     const handleNewActionValueTypeToggle = useCallback((type: ValueInputType) => {
         setNewActionValueType(type);
-        // Reset relevant state when type changes
         if (type === 'text') {
-            setNewActionFunctionValue(''); // Clear function value
-            if (newActionVariations.length === 0) setNewActionVariations(['']); // Ensure at least one empty variation input
+            setNewActionFunctionValue('');
+            if (newActionVariations.length === 0) setNewActionVariations(['']);
         } else {
-            // Don't necessarily clear variations state immediately, user might toggle back
-             setNewActionFunctionValue(mockAvailableFunctions[0]?.name || ''); // Set default function
+             setNewActionFunctionValue(mockAvailableFunctions[0]?.name || '');
         }
-    }, [newActionVariations.length]); // Dependency ensures check on variations length
+    }, [newActionVariations.length]);
 
-    // Variation handlers for the dialog
      const handleNewActionVariationChange = useCallback((index: number, value: string) => {
        setNewActionVariations(prev => {
            const copy = [...prev];
@@ -374,7 +423,6 @@ const Sidebar: React.FC<SidebarProps> = ({
        });
    }, []);
 
-    // Dialog submit updated for variations
     const handleActionDialogSubmit = useCallback(() => {
         const title = newActionTitle.trim();
         const name = newActionName.trim().replace(/\s+/g, '_').toLowerCase();
@@ -394,7 +442,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 name,
                 valueType: 'text',
                 variations: finalVariations,
-                 value: finalVariations[0], // Set first variation as value
+                 value: finalVariations[0],
             };
         } else { // Function type
              const functionValue = newActionFunctionValue.trim();
@@ -407,18 +455,14 @@ const Sidebar: React.FC<SidebarProps> = ({
                 name,
                 valueType: 'function',
                 value: functionValue,
-                 // variations: undefined, // Ensure variations is not set
             };
         }
-
         onAddNewActionDefinition(actionToAdd);
-
-        // Reset dialog state
         setNewActionTitle(''); setNewActionName(''); setNewActionValueType('text');
-        setNewActionVariations(['']); setNewActionFunctionValue(''); // Reset all value states
+        setNewActionVariations(['']); setNewActionFunctionValue('');
         setShowActionDialog(false);
     }, [
-        newActionTitle, newActionName, newActionValueType, newActionVariations, newActionFunctionValue, // Include new states
+        newActionTitle, newActionName, newActionValueType, newActionVariations, newActionFunctionValue,
         definedActions, onAddNewActionDefinition,
     ]);
 
@@ -456,10 +500,11 @@ const Sidebar: React.FC<SidebarProps> = ({
      case 'start': NodeIcon = PlayCircle; nodeTypeName = 'Start Node'; headerColor = 'text-indigo-800'; iconColor = 'text-indigo-600'; break;
      case 'intent': NodeIcon = Bot; nodeTypeName = 'Intent Node'; headerColor = 'text-blue-800'; iconColor = 'text-blue-600'; break;
      case 'action': NodeIcon = Zap; nodeTypeName = 'Action Node'; headerColor = 'text-green-800'; iconColor = 'text-green-600'; break;
+     case 'form': NodeIcon = ClipboardList; nodeTypeName = 'Form Node'; headerColor = 'text-teal-800'; iconColor = 'text-teal-600'; break; // Added Form
      case 'end': NodeIcon = FlagOff; nodeTypeName = 'End Node'; headerColor = 'text-red-800'; iconColor = 'text-red-600'; break;
      default: NodeIcon = AlertTriangle; nodeTypeName = 'Unknown Node'; headerColor = 'text-gray-800'; iconColor = 'text-yellow-500';
    }
-  const isConfigurable = selectedNode.type === 'start' || selectedNode.type === 'intent' || selectedNode.type === 'action';
+  const isConfigurable = selectedNode.type === 'start' || selectedNode.type === 'intent' || selectedNode.type === 'action' || selectedNode.type === 'form'; // Added form
   const nodeData = selectedNode.data || {};
   const currentIntentDefinition = nodeData.intentId ? intents.find(i => i.id === nodeData.intentId) : null;
 
@@ -498,12 +543,11 @@ const Sidebar: React.FC<SidebarProps> = ({
                         ) : ( <span className="text-gray-400 text-xs ml-1"> (None)</span> )}
                     </div>
                 </> )}
-                {/* --- Action Node View (Updated for Variations) --- */}
+                {/* --- Action Node View --- */}
                  {selectedNode.type === 'action' && ( <>
                     <p className="text-sm"> <span className="text-gray-500">Title:</span> <span className="font-medium text-gray-800 break-words">{nodeData.title || nodeData.name || '(Not Set)'}</span> </p>
                     <p className="text-sm"> <span className="text-gray-500">Name (ID):</span> <code className="text-xs bg-green-100 text-green-700 px-1 py-0.5 rounded break-all">{nodeData.name || '(Not Set)'}</code> </p>
                     {nodeData.valueType === 'function' ? (
-                        // Function View
                          <div className="text-sm flex items-start gap-1">
                             <span className="text-gray-500 flex-shrink-0 mt-0.5">Function:</span>
                             <GitBranch size={14} className="text-gray-500 mt-1 flex-shrink-0" title="Function Call" />
@@ -512,7 +556,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                             </div>
                          </div>
                     ) : (
-                        // Text/Variations View
                         <div className="text-sm">
                             <div className="flex justify-between items-center">
                                 <span className="text-gray-500">Text Variations:</span>
@@ -534,28 +577,60 @@ const Sidebar: React.FC<SidebarProps> = ({
                         </div>
                     )}
                  </> )}
+                {/* --- Form Node View --- */}
+                 {selectedNode.type === 'form' && ( <>
+                    <p className="text-sm"><span className="text-gray-500">Form Name:</span> <span className="font-medium text-teal-700 break-words">{nodeData.name || '(Not Set)'}</span></p>
+                    <p className="text-sm"><span className="text-gray-500">Form ID:</span> <code className="text-xs bg-teal-100 text-teal-700 px-1 py-0.5 rounded break-all">{nodeData.formId || '(Not Set)'}</code></p>
+                    <div className="text-sm">
+                        <span className="text-gray-500">Required Slots:</span>
+                        {nodeData.slots && nodeData.slots.length > 0 ? (
+                            <div className="flex flex-wrap gap-1 mt-1">
+                                {nodeData.slots.map((slot: string, i: number) => (
+                                    <span key={i} className="inline-flex items-center gap-1 bg-gray-100 text-gray-700 text-xs font-medium px-2 py-0.5 rounded-full border border-gray-300">
+                                        <CheckSquare size={12} className="text-teal-600" /> {slot}
+                                    </span>
+                                ))}
+                            </div>
+                        ) : (
+                            <span className="text-gray-400 text-xs ml-1"> (None selected)</span>
+                        )}
+                    </div>
+                 </> )}
                  {/* --- Action Buttons --- */}
                  <div className="mt-5 pt-4 border-t border-gray-100 space-y-2">
-                  <button onClick={() => handleSetMode('edit')} className={`w-full flex items-center justify-center gap-2 px-4 py-2 rounded focus:outline-none focus:ring-2 text-sm font-medium transition-colors duration-150 border ${selectedNode.type === 'start' ? 'bg-indigo-50 border-indigo-300 text-indigo-700 hover:bg-indigo-100 focus:ring-indigo-500' : selectedNode.type === 'intent' ? 'bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100 focus:ring-blue-500' : 'bg-green-50 border-green-300 text-green-700 hover:bg-green-100 focus:ring-green-500'}`}> <Edit size={16} /> Edit Details </button>
-                  {(selectedNode.type === 'intent' || selectedNode.type === 'action') && ( <button onClick={() => { setIsChangingDefinition(true); setSearchTerm(''); }} className="w-full flex items-center justify-center gap-2 bg-gray-50 border border-gray-300 text-gray-700 px-4 py-2 rounded hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-400 text-sm font-medium"> <Replace size={16} /> Change {selectedNode.type === 'intent' ? 'Intent' : 'Action'} Definition </button> )}
+                  {/* Shared Edit Button */}
+                   <button onClick={() => handleSetMode('edit')} className={`w-full flex items-center justify-center gap-2 px-4 py-2 rounded focus:outline-none focus:ring-2 text-sm font-medium transition-colors duration-150 border ${
+                        selectedNode.type === 'start' ? 'bg-indigo-50 border-indigo-300 text-indigo-700 hover:bg-indigo-100 focus:ring-indigo-500' :
+                        selectedNode.type === 'intent' ? 'bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100 focus:ring-blue-500' :
+                        selectedNode.type === 'action' ? 'bg-green-50 border-green-300 text-green-700 hover:bg-green-100 focus:ring-green-500' :
+                        selectedNode.type === 'form' ? 'bg-teal-50 border-teal-300 text-teal-700 hover:bg-teal-100 focus:ring-teal-500' : // Form color
+                        'bg-gray-50 border-gray-300 text-gray-700 hover:bg-gray-100 focus:ring-gray-500' // Default fallback
+                   }`}> <Edit size={16} /> Edit Details </button>
+                  {/* Change Definition Button (Only for Intent/Action) */}
+                  {(selectedNode.type === 'intent' || selectedNode.type === 'action') && (
+                        <button onClick={() => { setIsChangingDefinition(true); setSearchTerm(''); }} className="w-full flex items-center justify-center gap-2 bg-gray-50 border border-gray-300 text-gray-700 px-4 py-2 rounded hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-400 text-sm font-medium"> <Replace size={16} /> Change {selectedNode.type === 'intent' ? 'Intent' : 'Action'} Definition </button>
+                   )}
                  </div>
-                 {/* --- Footer Buttons (Define New) --- */}
+                 {/* --- Footer Buttons (Define New - Action/Intent) --- */}
                 <div className="mt-auto pt-3 border-t border-gray-200">
                   {selectedNode.type === 'intent' && ( <button onClick={() => setShowIntentDialog(true)} className="w-full flex items-center justify-center gap-1.5 bg-blue-50 border border-blue-300 text-blue-700 px-3 py-2 rounded hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"> <PlusCircle size={16} /> Define New Intent </button> )}
                   {selectedNode.type === 'action' && ( <button onClick={() => setShowActionDialog(true)} className="w-full flex items-center justify-center gap-1.5 bg-green-50 border border-green-300 text-green-700 px-3 py-2 rounded hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-green-500 text-sm"> <PlusCircle size={16} /> Define New Action </button> )}
+                  {/* Consider adding "Define New Entity" button here if needed */}
                 </div>
               </div>
             )}
 
-            {/* VIEW MODE - CHANGE DEFINITION (Unchanged Structure) */}
-            {mode === 'view' && isChangingDefinition && ( <div className="space-y-3">
-                 <div className="flex justify-between items-center mb-2"> <h4 className="text-md font-semibold text-gray-700">Select New {selectedNode.type === 'intent' ? 'Intent' : 'Action'}</h4> <button onClick={() => { setIsChangingDefinition(false); setSearchTerm(''); }} className="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1" title="Cancel Change"> <ChevronLeft size={16} /> Cancel </button> </div>
-                 <div className="relative"> <input type="text" placeholder={`Search ${selectedNode.type === 'intent' ? 'intents...' : 'actions...'}`} value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full border border-gray-300 rounded-md p-2 pl-8 text-sm focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 shadow-sm" /> <Search size={16} className="absolute left-2.5 top-1/2 transform -translate-y-1/2 text-gray-400" /> </div>
-                 <div className="space-y-1 max-h-80 overflow-y-auto border rounded-md p-1 bg-gray-50 scrollbar-thin">
-                  {selectedNode.type === 'intent' && (filteredIntents.length > 0 ? ( filteredIntents.map((intent) => ( <button key={intent.id} onClick={() => handleChangeIntentClick(intent.id)} disabled={nodeData.intentId === intent.id} className={`w-full text-left px-3 py-1.5 rounded text-sm flex justify-between items-center transition-colors duration-100 ${nodeData.intentId === intent.id ? 'bg-blue-100 text-blue-800 font-medium cursor-not-allowed opacity-70' : 'hover:bg-blue-50 text-gray-700 hover:text-blue-800'}`} title={`ID: ${intent.id}\nEntities: ${intent.entities?.join(', ') || 'None'}`}> <span className='truncate pr-2'>{intent.label}</span> <code className="text-xs text-gray-500 flex-shrink-0">{intent.id}</code> </button> )) ) : ( <p className="text-center text-xs text-gray-400 py-4">No matching intents.</p> ))}
-                  {selectedNode.type === 'action' && (filteredActions.length > 0 ? ( filteredActions.map((action) => ( <button key={action.name} onClick={() => handleChangeActionClick(action.name)} disabled={nodeData.name === action.name} className={`w-full text-left px-3 py-1.5 rounded text-sm flex justify-between items-center transition-colors duration-100 ${nodeData.name === action.name ? 'bg-green-100 text-green-800 font-medium cursor-not-allowed opacity-70' : 'hover:bg-green-50 text-gray-700 hover:text-green-800'}`} title={`Name: ${action.name}\nType: ${action.valueType}`}> <span className="truncate pr-2">{action.title || action.name}</span> {action.valueType === 'function' && ( <GitBranch size={14} className="text-gray-500 ml-2 flex-shrink-0" title="Function" /> )} </button> )) ) : ( <p className="text-center text-xs text-gray-400 py-4">No matching actions.</p> ))}
-                 </div>
-            </div> )}
+            {/* VIEW MODE - CHANGE DEFINITION (Only Intent/Action) */}
+            {mode === 'view' && isChangingDefinition && (selectedNode.type === 'intent' || selectedNode.type === 'action') && (
+                <div className="space-y-3">
+                     <div className="flex justify-between items-center mb-2"> <h4 className="text-md font-semibold text-gray-700">Select New {selectedNode.type === 'intent' ? 'Intent' : 'Action'}</h4> <button onClick={() => { setIsChangingDefinition(false); setSearchTerm(''); }} className="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1" title="Cancel Change"> <ChevronLeft size={16} /> Cancel </button> </div>
+                     <div className="relative"> <input type="text" placeholder={`Search ${selectedNode.type === 'intent' ? 'intents...' : 'actions...'}`} value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full border border-gray-300 rounded-md p-2 pl-8 text-sm focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 shadow-sm" /> <Search size={16} className="absolute left-2.5 top-1/2 transform -translate-y-1/2 text-gray-400" /> </div>
+                     <div className="space-y-1 max-h-80 overflow-y-auto border rounded-md p-1 bg-gray-50 scrollbar-thin">
+                      {selectedNode.type === 'intent' && (filteredIntents.length > 0 ? ( filteredIntents.map((intent) => ( <button key={intent.id} onClick={() => handleChangeIntentClick(intent.id)} disabled={nodeData.intentId === intent.id} className={`w-full text-left px-3 py-1.5 rounded text-sm flex justify-between items-center transition-colors duration-100 ${nodeData.intentId === intent.id ? 'bg-blue-100 text-blue-800 font-medium cursor-not-allowed opacity-70' : 'hover:bg-blue-50 text-gray-700 hover:text-blue-800'}`} title={`ID: ${intent.id}\nEntities: ${intent.entities?.join(', ') || 'None'}`}> <span className='truncate pr-2'>{intent.label}</span> <code className="text-xs text-gray-500 flex-shrink-0">{intent.id}</code> </button> )) ) : ( <p className="text-center text-xs text-gray-400 py-4">No matching intents.</p> ))}
+                      {selectedNode.type === 'action' && (filteredActions.length > 0 ? ( filteredActions.map((action) => ( <button key={action.name} onClick={() => handleChangeActionClick(action.name)} disabled={nodeData.name === action.name} className={`w-full text-left px-3 py-1.5 rounded text-sm flex justify-between items-center transition-colors duration-100 ${nodeData.name === action.name ? 'bg-green-100 text-green-800 font-medium cursor-not-allowed opacity-70' : 'hover:bg-green-50 text-gray-700 hover:text-green-800'}`} title={`Name: ${action.name}\nType: ${action.valueType}`}> <span className="truncate pr-2">{action.title || action.name}</span> {action.valueType === 'function' && ( <GitBranch size={14} className="text-gray-500 ml-2 flex-shrink-0" title="Function" /> )} </button> )) ) : ( <p className="text-center text-xs text-gray-400 py-4">No matching actions.</p> ))}
+                     </div>
+                </div>
+             )}
 
             {/* EDIT MODE */}
             {mode === 'edit' && ( <div className="space-y-4">
@@ -572,7 +647,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                     <div> <label className="block text-sm font-medium text-gray-700 mb-1"> Examples <span className="text-gray-400 text-xs">(updates definition)</span> </label> <p className="text-xs text-gray-500 mb-2"> Use <code className="text-xs">[value](entity)</code> format. </p> <div className="space-y-2 max-h-60 overflow-y-auto pr-1 scrollbar-thin"> {currentExamples.map((example, index) => ( <div key={index} className="flex items-center gap-2"> <input type="text" value={example} onChange={(e) => handleExampleChange(index, e.target.value)} className="flex-grow border border-gray-300 rounded-md p-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm text-sm" placeholder={`Example ${index + 1}`}/> <button onClick={() => handleRemoveExampleInput(index)} type="button" disabled={currentExamples.length <= 1 && example === ''} className={`p-1 text-red-500 hover:text-red-700 rounded-full hover:bg-red-100 flex-shrink-0 disabled:text-gray-400 disabled:hover:bg-transparent disabled:cursor-not-allowed ${currentExamples.length <= 1 ? 'invisible' : ''}`} title="Remove"> <X size={16} /> </button> </div> ))} </div> <button onClick={handleAddExampleInput} type="button" className="mt-2 text-blue-600 hover:text-blue-800 text-sm flex items-center gap-1"> <PlusCircle size={16} /> Add Example </button> </div>
                     <div className="flex gap-2 pt-3 border-t border-blue-100"> <button onClick={handleIntentEditSave} className="flex-1 btn btn-primary btn-sm" disabled={!currentIntentId || !intents.some(i => i.id === currentIntentId)}> <Check size={16} /> Save </button> <button onClick={() => handleSetMode('view')} className="flex-1 btn btn-secondary btn-sm"> Cancel </button> </div>
                 </div> )}
-                {/* --- Edit Action Node (Updated for Variations) --- */}
+                {/* --- Edit Action Node --- */}
                 {selectedNode.type === 'action' && ( <div className="space-y-4 p-3 bg-green-50 border border-green-200 rounded-md">
                      <div> <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="actionConfigTitle">Display Title <span className="text-gray-400 text-xs">(optional)</span></label> <input id="actionConfigTitle" type="text" value={currentActionConfig.title || ''} onChange={(e) => handleActionConfigChange('title', e.target.value)} className="block w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm" placeholder="Node title"/> </div>
                      <div> <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="actionConfigName">Action Name (ID) <span className="text-red-500">*</span></label> <input id="actionConfigName" type="text" value={currentActionConfig.name || ''} onChange={(e) => handleActionConfigChange('name', e.target.value)} required className="block w-full border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm font-mono" placeholder="e.g., action_ask_name"/> <p className="text-xs text-gray-500 mt-1">Unique ID (lowercase_underscores).</p> </div>
@@ -589,12 +664,12 @@ const Sidebar: React.FC<SidebarProps> = ({
                                             onChange={(e) => handleVariationChange(index, e.target.value)}
                                             className="flex-grow border border-gray-300 rounded-md p-2 focus:ring-green-500 focus:border-green-500 shadow-sm text-sm font-mono text-xs"
                                             placeholder={`Variation ${index + 1}`}
-                                            rows={2} // Small text area for each variation
+                                            rows={2}
                                         />
                                         <button
                                             onClick={() => handleRemoveVariationInput(index)}
                                             type="button"
-                                            disabled={currentVariations.length <= 1} // Disable removing the last one
+                                            disabled={currentVariations.length <= 1}
                                             className={`p-1 text-red-500 hover:text-red-700 rounded-full hover:bg-red-100 flex-shrink-0 disabled:text-gray-400 disabled:hover:bg-transparent disabled:cursor-not-allowed`}
                                             title="Remove variation"
                                         > <Trash2 size={16} /> </button>
@@ -618,13 +693,39 @@ const Sidebar: React.FC<SidebarProps> = ({
                     )}
                     <div className="flex gap-2 pt-3 border-t border-green-100"> <button onClick={handleActionEditSave} className="flex-1 btn btn-primary btn-sm" disabled={!currentActionConfig.name}> <Check size={16} /> Save </button> <button onClick={() => handleSetMode('view')} className="flex-1 btn btn-secondary btn-sm"> Cancel </button> </div>
                 </div> )}
+                {/* --- Edit Form Node --- */}
+                 {selectedNode.type === 'form' && ( <div className="space-y-4 p-3 bg-teal-50 border border-teal-200 rounded-md">
+                     <div> <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="formNameEdit">Form Name</label> <input id="formNameEdit" type="text" value={currentFormName} onChange={(e) => handleFormNameChange(e.target.value)} className="block w-full border border-gray-300 rounded-md p-2 focus:ring-teal-500 focus:border-teal-500 shadow-sm text-sm" placeholder="Enter form name"/> </div>
+                     <div> <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="formIdEdit">Form ID <span className="text-red-500">*</span></label> <input id="formIdEdit" type="text" value={currentFormId} onChange={(e) => handleFormIdChange(e.target.value)} required className="block w-full border border-gray-300 rounded-md p-2 focus:ring-teal-500 focus:border-teal-500 shadow-sm text-sm font-mono" placeholder="e.g., user_info_form"/> <p className="text-xs text-gray-500 mt-1">Unique ID (lowercase_underscores).</p> </div>
+                     <div> <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-1"><ListChecks size={14} /> Required Slots</label>
+                       {availableEntities.length === 0 ? (
+                          <p className="text-xs text-gray-500 bg-white p-2 rounded border border-gray-200">No entities found in intents. Add entities like `[value](entity_name)` to intent examples to create available slots.</p>
+                       ) : (
+                         <div className="space-y-1 max-h-60 overflow-y-auto border rounded-md p-2 bg-white scrollbar-thin">
+                           {availableEntities.map(entity => (
+                             <label key={entity} className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer p-1 hover:bg-teal-50 rounded">
+                               <input
+                                 type="checkbox"
+                                 checked={currentSlots.includes(entity)}
+                                 onChange={() => handleSlotToggle(entity)}
+                                 className="checkbox checkbox-sm checkbox-primary rounded border-gray-400 checked:border-teal-500 [--chkfg:white] [--chkbg:theme(colors.teal.500)]"
+                               />
+                               <span className="select-none">{entity}</span>
+                             </label>
+                           ))}
+                         </div>
+                       )}
+                       <p className="text-xs text-gray-500 mt-1">Select entities the form should collect.</p>
+                     </div>
+                     <div className="flex gap-2 pt-3 border-t border-teal-100"> <button onClick={handleFormEditSave} className="flex-1 btn btn-primary btn-sm" disabled={!currentFormId}> <Check size={16} /> Save </button> <button onClick={() => handleSetMode('view')} className="flex-1 btn btn-secondary btn-sm"> Cancel </button> </div>
+                 </div> )}
             </div> )}
           </>
         )}
       </div>
 
         {/* --- DIALOGS --- */}
-        {/* Define New Intent Dialog (Unchanged Structure) */}
+        {/* Define New Intent Dialog (Unchanged) */}
         {showIntentDialog && ( <div className="fixed inset-0 bg-black bg-opacity-40 backdrop-blur-sm flex items-center justify-center z-50 p-4"> <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-lg relative max-h-[90vh] flex flex-col">
             <div className="flex justify-between items-center border-b pb-3 mb-4 flex-shrink-0"> <h4 className="text-lg font-semibold text-blue-800 flex items-center gap-2"><PlusCircle size={18} /> Define New Intent</h4> <button onClick={() => setShowIntentDialog(false)} className="text-gray-400 hover:text-gray-600"> <X size={20} /> </button> </div>
             <div className="space-y-4 overflow-y-auto pr-2 flex-grow scrollbar-thin">
@@ -635,15 +736,13 @@ const Sidebar: React.FC<SidebarProps> = ({
             <div className="flex justify-end gap-3 border-t pt-4 mt-4 flex-shrink-0"> <button onClick={() => setShowIntentDialog(false)} className="btn btn-secondary btn-sm"> Cancel </button> <button onClick={handleIntentDialogSubmit} className="btn btn-primary btn-sm"> <Check size={16} /> Create Intent </button> </div>
         </div> </div> )}
 
-      {/* Define New Action Dialog (UPDATED for Variations) */}
+      {/* Define New Action Dialog (Unchanged) */}
        {showActionDialog && ( <div className="fixed inset-0 bg-black bg-opacity-40 backdrop-blur-sm flex items-center justify-center z-50 p-4"> <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-lg relative max-h-[90vh] flex flex-col">
             <div className="flex justify-between items-center border-b pb-3 mb-4 flex-shrink-0"> <h4 className="text-lg font-semibold text-green-800 flex items-center gap-2"> <PlusCircle size={18} /> Define New Action </h4> <button onClick={() => setShowActionDialog(false)} className="text-gray-400 hover:text-gray-600"> <X size={20} /> </button> </div>
-             {/* Dialog Body */}
             <div className="space-y-4 overflow-y-auto pr-2 flex-grow scrollbar-thin">
                 <div> <label htmlFor="newActionTitle" className="block text-sm font-medium text-gray-700 mb-1"> Title <span className="text-gray-400 text-xs">(optional)</span> </label> <input type="text" id="newActionTitle" value={newActionTitle} onChange={(e) => setNewActionTitle(e.target.value)} className="w-full input input-bordered input-sm" placeholder="Display title"/> </div>
                 <div> <label htmlFor="newActionName" className="block text-sm font-medium text-gray-700 mb-1"> Name (ID) <span className="text-red-500">*</span> </label> <input type="text" id="newActionName" value={newActionName} onChange={(e) => setNewActionName(e.target.value)} required className="w-full input input-bordered input-sm font-mono" placeholder="e.g., action_lookup or utter_greet"/> <p className="text-xs text-gray-500 mt-1"> Use lowercase_underscores. </p> </div>
                 <div> <label className="block text-sm font-medium text-gray-700 mb-1">Value Type</label> <div className="flex gap-2"> <button onClick={() => handleNewActionValueTypeToggle('text')} className={`btn-sm btn-toggle ${newActionValueType === 'text' ? 'active' : ''}`}> <Type size={14} /> Text/Variations </button> <button onClick={() => handleNewActionValueTypeToggle('function')} className={`btn-sm btn-toggle ${newActionValueType === 'function' ? 'active' : ''}`}> <GitBranch size={14} /> Function </button> </div> </div>
-                 {/* Variations Input for Dialog */}
                 {newActionValueType === 'text' ? (
                     <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1"> Response Variations <span className="text-red-500">*</span></label>
@@ -668,7 +767,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                      </div>
                  )}
             </div>
-            {/* Dialog Footer */}
             <div className="flex justify-end gap-3 border-t pt-4 mt-4 flex-shrink-0"> <button onClick={() => setShowActionDialog(false)} className="btn btn-secondary btn-sm"> Cancel </button> <button onClick={handleActionDialogSubmit} className="btn btn-primary btn-sm"> <Check size={16} /> Create Action </button> </div>
         </div> </div> )}
 
@@ -695,6 +793,9 @@ const Sidebar: React.FC<SidebarProps> = ({
         .input-sm, .textarea-sm, .select-sm { padding-top: 0.25rem; padding-bottom: 0.25rem; font-size: 0.875rem; line-height: 1.25rem; } /* Adjust padding/font for sm */
         .textarea-xs { font-size: 0.75rem; line-height: 1rem; padding: 0.25rem 0.5rem; }
         .input-bordered, .textarea-bordered, .select-bordered { /* Add specific border styles if needed */ }
+        /* DaisyUI checkbox override */
+        .checkbox { height: 1rem; width: 1rem; }
+        .checkbox-sm { height: 0.875rem; width: 0.875rem; }
          /* Add any other specific styles for DaisyUI/Tailwind Forms if used */
       `}</style>
     </div>

@@ -1,3 +1,4 @@
+// ./src/Flow.tsx
 import React, { useState, useCallback, useMemo, useRef, useEffect, Suspense } from 'react';
 import ReactFlow, {
   Controls,
@@ -18,12 +19,13 @@ import ReactFlow, {
   // ConnectionMode // Optional import
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { Bot, Zap, FlagOff, Plus, Settings, PlayCircle } from 'lucide-react';
+import { Bot, Zap, FlagOff, Plus, Settings, PlayCircle, ClipboardList } from 'lucide-react'; // Added ClipboardList
 import { motion, AnimatePresence } from 'framer-motion';
 import StartNode from './components/nodes/StartNode';
 import IntentNode from './components/nodes/IntentNode';
 import ActionNode from './components/nodes/ActionNode';
 import EndNode from './components/nodes/EndNode';
+import FormNode from './components/nodes/FormNode'; // Import FormNode
 import Sidebar from './components/Sidebar';
 import {
   ActionDefinition,
@@ -31,6 +33,7 @@ import {
   IntentNodeData,
   ActionNodeData,
   IntentDefinition,
+  FormNodeData, // Import FormNodeData
 } from './types';
 // Import processed edges if using defaults application in mockData.ts
 import {
@@ -43,7 +46,7 @@ import {
 } from './data/mockData';
 const ChatBotWidget = React.lazy(() => import('./components/ChatBotWidget'));
 import { useAtom } from 'jotai';
-import { EdgesAtom, isLoadingAtom, NodesAtom } from './store/flowAtom';
+import { EdgesAtom, isLoadingAtom, isBotTrainedAtom, NodesAtom } from './store/flowAtom'; // Added isBotTrainedAtom
 import { useDebouncedCallback } from 'use-debounce';
 import { toast } from 'react-toastify'; // Removed ToastContainer import here
 import 'react-toastify/dist/ReactToastify.css';
@@ -54,16 +57,18 @@ const colorClasses: { [key: string]: { bg: string; hoverBg: string } } = {
   blue: { bg: 'bg-blue-500', hoverBg: 'hover:bg-blue-600' },
   green: { bg: 'bg-green-500', hoverBg: 'hover:bg-green-600' },
   red: { bg: 'bg-red-500', hoverBg: 'hover:bg-red-600' },
+  teal: { bg: 'bg-teal-500', hoverBg: 'hover:bg-teal-600' }, // Added teal
   gray: { bg: 'bg-gray-500', hoverBg: 'hover:bg-gray-600' },
 };
 
 function isConfigurableNode(node: Node | null): boolean {
   if (!node) return false;
-  return node.type === 'start' || node.type === 'intent' || node.type === 'action';
+  // Add 'form' to configurable node types
+  return node.type === 'start' || node.type === 'intent' || node.type === 'action' || node.type === 'form';
 }
 
 type StoryStep = {
-  node: 'intent' | 'action';
+  node: 'intent' | 'action' | 'form'; // Add form to story steps
   name: string;
 };
 
@@ -92,6 +97,7 @@ function FlowContent() {
   const [definedActions, setDefinedActions] = useState<ActionDefinition[]>(mockDefinedActions);
   const [intents, setIntents] = useState<IntentDefinition[]>(mockIntents);
   const [isLoading, setLoading] = useAtom(isLoadingAtom);
+  const [isTrained, setIsTrained] = useAtom(isBotTrainedAtom); // Use isBotTrainedAtom
 
   // Initialize nodes/edges from local storage or mock data ONCE
   useEffect(() => {
@@ -118,9 +124,9 @@ function FlowContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Empty dependency array ensures this runs only once on mount
 
-  const [isTrained, setIsTrained] = useAtom(isBotTrainedAtom);
+  // Include FormNode in nodeTypes
   const nodeTypes: NodeTypes = useMemo(
-    () => ({ start: StartNode, intent: IntentNode, action: ActionNode, end: EndNode }),
+    () => ({ start: StartNode, intent: IntentNode, action: ActionNode, end: EndNode, form: FormNode }),
     []
   );
 
@@ -141,7 +147,8 @@ function FlowContent() {
 
   // --- Node Update Logic ---
   const updateNode = useCallback(
-    <T extends StartNodeData | IntentNodeData | ActionNodeData>(
+    // Extend generic type to include FormNodeData
+    <T extends StartNodeData | IntentNodeData | ActionNodeData | FormNodeData>(
       nodeId: string,
       nodeType: string,
       updateData: Partial<T>
@@ -201,7 +208,6 @@ function FlowContent() {
     [updateNode, intents, setIntents]
   );
 
-  // Updated for variations
   const updateActionNode = useCallback(
     (nodeId: string, actionData: Partial<ActionNodeData>) => {
       const nodeToUpdate = getNode(nodeId);
@@ -282,6 +288,16 @@ function FlowContent() {
     [getNode, definedActions, setDefinedActions, updateNode]
   );
 
+  // --- Add Form Node Update Logic ---
+  const updateFormNode = useCallback(
+    (nodeId: string, formData: Partial<FormNodeData>) => {
+      updateNode<FormNodeData>(nodeId, 'form', formData);
+      // Note: Form definitions are not stored globally like actions/intents in this setup.
+      // The form's definition *is* the node data.
+    },
+    [updateNode]
+  );
+
   // --- Selection & UI ---
   const onSelectionChange = useCallback(({ nodes: selectedNodes }: OnSelectionChangeParams) => {
     const newSelectedNode = selectedNodes.length === 1 ? selectedNodes[0] : null;
@@ -307,9 +323,9 @@ function FlowContent() {
     return { x: 250 + Math.random() * 100, y: 150 + Math.random() * 100 };
   }, [screenToFlowPosition]);
 
-  // --- Add Node (Updated for variations) ---
+  // --- Add Node (Updated for Form Node) ---
   const handleAddNode = useCallback(
-    (type: 'intent' | 'action' | 'end' | 'start') => {
+    (type: 'intent' | 'action' | 'end' | 'start' | 'form') => { // Added 'form'
       const position = getCenterPosition();
       let newNodeData: any = {};
       if (type === 'start') {
@@ -352,6 +368,12 @@ function FlowContent() {
               ? [...(defaultAction.variations || [''])]
               : undefined,
         };
+      } else if (type === 'form') { // Handle form node creation
+          newNodeData = {
+              name: 'New Form',
+              formId: `form_${getId().slice(-4)}`,
+              slots: [], // Start with empty slots
+          };
       } else if (type === 'end') {
         newNodeData = {};
       }
@@ -363,7 +385,7 @@ function FlowContent() {
     [addNodes, getCenterPosition, definedActions, intents]
   );
 
-  // --- Add Definitions (Updated for variations) ---
+  // --- Add Definitions (Unchanged) ---
   const handleAddNewIntentDefinition = useCallback(
     (newIntent: IntentDefinition) => {
       setIntents((prev) => {
@@ -412,7 +434,7 @@ function FlowContent() {
 
   const toggleFabMenu = useCallback(() => setIsFabMenuOpen((prev) => !prev), []);
 
-  // --- Export Flow Data (Updated for variations) ---
+  // --- Export Flow Data (Updated for Forms) ---
   const exportFlowData = useCallback(async () => {
     setLoading(true);
     const allNodes = getNodes();
@@ -426,7 +448,7 @@ function FlowContent() {
     }));
 
     // Collect entities while formatting intents (optimization)
-    const entitiesSet = new Set();
+    const entitiesSet = new Set<string>(); // Explicitly string
     intents.forEach((intent) => {
       intent.entities?.forEach((entity) => entitiesSet.add(entity));
     });
@@ -466,13 +488,33 @@ function FlowContent() {
       }
     });
 
-    // 3. Generate Stories using Topological Sort
+    // 3. Format Forms (NEW)
+    const formattedForms: { [formId: string]: { required_slots: string[] } } = {};
+    allNodes.forEach(node => {
+        if (node.type === 'form' && node.data?.formId) {
+            // Basic validation: ensure slots are strings
+            const validSlots = Array.isArray(node.data.slots)
+                ? node.data.slots.filter((s: any): s is string => typeof s === 'string')
+                : [];
+            if (validSlots.length > 0) {
+                formattedForms[node.data.formId] = {
+                    required_slots: validSlots
+                };
+                // Also add required slots to the global entity set
+                validSlots.forEach(slot => entitiesSet.add(slot));
+            } else {
+                 console.warn(`Form node ${node.id} (ID: ${node.data.formId}) has no valid slots defined.`);
+            }
+        }
+    });
+
+    // 4. Generate Stories using Topological Sort (Updated to include forms)
     const stories = [];
 
     // Create efficient lookup maps
     const nodeMap = Object.fromEntries(allNodes.map((node) => [node.id, node]));
-    const outgoingEdges = {};
-    const incomingEdges = {};
+    const outgoingEdges: { [key: string]: Edge[] } = {}; // Typed
+    const incomingEdges: { [key: string]: Edge[] } = {}; // Typed
 
     // Initialize edge tracking
     allNodes.forEach((node) => {
@@ -482,6 +524,8 @@ function FlowContent() {
 
     // Populate edge maps
     allEdges.forEach((edge) => {
+      if (!outgoingEdges[edge.source]) outgoingEdges[edge.source] = []; // Defensive check
+      if (!incomingEdges[edge.target]) incomingEdges[edge.target] = []; // Defensive check
       outgoingEdges[edge.source].push(edge);
       incomingEdges[edge.target].push(edge);
     });
@@ -500,12 +544,17 @@ function FlowContent() {
       const storyName = startNode.data?.storyId || `Generated_Story_${startNode.id}`;
 
       // Perform topological sort from this start node
-      const visited = new Set();
-      const path = []; // Will store nodes in topological order
-      const onStack = new Set(); // For cycle detection
+      const visited = new Set<string>(); // Typed
+      const path: string[] = []; // Will store node IDs in topological order, Typed
+      const onStack = new Set<string>(); // For cycle detection, Typed
       let hasCycle = false;
 
-      function dfs(nodeId) {
+      function dfs(nodeId: string) {
+        if (!nodeMap[nodeId]) {
+          console.warn(`Node ID ${nodeId} not found in nodeMap during DFS for story ${storyName}`);
+          hasCycle = true; // Treat missing node as an issue
+          return;
+        }
         if (hasCycle || nodeMap[nodeId].type === 'end') {
           return;
         }
@@ -535,23 +584,18 @@ function FlowContent() {
       dfs(startNode.id);
 
       if (hasCycle) {
-        return; // Skip this story due to cycle
+        return; // Skip this story due to cycle or error
       }
 
       // Convert topological order to story steps (skip start node)
-      const steps = [];
+      const steps: StoryStep[] = []; // Typed
 
       for (let i = 0; i < path.length; i++) {
         const nodeId = path[i];
         const node = nodeMap[nodeId];
 
-        // Skip start nodes in the steps
-        if (node.type === 'start') {
-          continue;
-        }
-
-        // Skip end nodes in the steps
-        if (node.type === 'end') {
+        // Skip start and end nodes in the steps
+        if (node.type === 'start' || node.type === 'end') {
           continue;
         }
 
@@ -559,31 +603,41 @@ function FlowContent() {
           steps.push({ node: 'intent', name: node.data.intentId });
         } else if (node.type === 'action' && node.data?.name) {
           steps.push({ node: 'action', name: node.data.name });
+        } else if (node.type === 'form' && node.data?.formId) { // Handle form steps
+            steps.push({ node: 'form', name: node.data.formId });
+            // Rasa convention: Follow form with action_deactivate_loop and active_loop: null
+            // Add these if your backend expects them. For now, just adding the form itself.
+            // steps.push({ node: 'action', name: 'action_deactivate_loop' });
+            // steps.push({ node: 'form', name: null }); // Represents active_loop: null - adjust format as needed
         }
       }
 
       if (steps.length > 0) {
         stories.push({ name: storyName, steps });
       } else {
-        console.warn(`Story '${storyName}' has no steps.`);
+        console.warn(`Story '${storyName}' has no valid steps.`);
       }
     });
 
-    // Format entities
+    // 5. Format entities (Now includes entities from forms)
     const formattedEntities = Array.from(entitiesSet).map((name) => ({
       name,
     }));
 
-    // 4. Assemble Final JSON
-    const exportData = {
+    // 6. Assemble Final JSON (with forms)
+    const exportData: any = {
       intents: formattedIntents,
       actions: formattedActions,
       entities: formattedEntities,
       stories: stories,
     };
+    if (Object.keys(formattedForms).length > 0) {
+        exportData.forms = formattedForms; // Add forms section if not empty
+    }
+
     console.log('Export Data Payload:', JSON.stringify(exportData, null, 2));
 
-    // 5. Send to Backend API
+    // 7. Send to Backend API
     if (stories.length === 0) {
       toast.error('No valid stories generated.');
       setLoading(false);
@@ -600,39 +654,48 @@ function FlowContent() {
           .then((response) => {
             if (!response.ok) {
               setIsTrained(false);
-              throw new Error('Failed to send data to the API');
+              return response.json().then(err => { // Try to parse error body
+                   throw new Error(err?.message || `API Error ${response.status}`);
+              }).catch(() => { // Fallback if error body parsing fails
+                   throw new Error(`API Error ${response.status}`);
+              })
             }
             return response.json();
           })
           .then((data) => {
             console.log('✅ API response:', data);
-            setIsTrained(true);
-            return data;
+            setIsTrained(true); // Set trained state on success
+            return data; // Return data for success message
           })
           .catch((error) => {
-            setIsTrained(false);
+            setIsTrained(false); // Set trained state to false on error
             console.error('❌ Error sending data to API:', error);
-            throw error;
+            throw error; // Re-throw error for toast.promise
           }),
         {
           pending: 'Training model...',
           success: 'Model training started!',
           error: {
-            render({ data }) {
-              console.log('Training Error:', data);
-
-              return `Training failed: ${data?.message || 'Unknown error'}`;
+            render({ data }) { // data here is the error object re-thrown
+              console.error('Training Error Render:', data);
+              // Ensure data is an error object before accessing message
+              const message = data instanceof Error ? data.message : 'Unknown training error';
+              return `Training failed: ${message}`;
             },
           },
         },
-        { autoClose: 3000 }
+        { autoClose: 3000 } // Options object for toast.promise
       );
     } catch (error) {
+      // Catch errors not handled by toast.promise (e.g., network issues before fetch)
       console.error('Export Error:', error);
+      // Potentially show a generic error toast here if needed
     } finally {
       setLoading(false);
     }
-  }, [intents, definedActions, getNodes, getEdges, setLoading]);
+  }, [intents, definedActions, getNodes, getEdges, setLoading, setIsTrained]); // Added setIsTrained
+
+
   // --- useEffects & Chatbot ---
   useEffect(() => {
     // Click outside FAB
@@ -646,10 +709,13 @@ function FlowContent() {
 
   const saveNodesToLocalStorage = useDebouncedCallback((nodesToSave: Node[]) => {
     try {
-      localStorage.setItem('nodes', JSON.stringify(nodesToSave.map((n) => ({ ...n }))));
-      console.log('Saved nodes:', nodesToSave.length);
+      // Ensure data is serializable (especially functions if they were ever stored in data)
+      const serializableNodes = nodesToSave.map(n => ({...n, data: {...n.data}}));
+      localStorage.setItem('nodes', JSON.stringify(serializableNodes));
+      console.log('Saved nodes:', serializableNodes.length);
     } catch (e) {
       console.error('LS Node Save Error:', e);
+      toast.error("Could not save nodes to local storage.")
     }
   }, 1000);
   useEffect(() => {
@@ -658,45 +724,58 @@ function FlowContent() {
 
   const saveEdgesToLocalStorage = useDebouncedCallback((edgesToSave: Edge[]) => {
     try {
-      localStorage.setItem('edges', JSON.stringify(edgesToSave.map((e) => ({ ...e }))));
-      console.log('Saved edges:', edgesToSave.length);
+       const serializableEdges = edgesToSave.map(e => ({...e, data: e.data ? {...e.data} : undefined}));
+      localStorage.setItem('edges', JSON.stringify(serializableEdges));
+      console.log('Saved edges:', serializableEdges.length);
     } catch (e) {
       console.error('LS Edge Save Error:', e);
+       toast.error("Could not save edges to local storage.")
     }
   }, 1000);
   useEffect(() => {
     if (edges.length > 0) saveEdgesToLocalStorage(edges);
   }, [edges, saveEdgesToLocalStorage]);
 
-  const handleNewMessage = (message: string) => {
-    setMessages((prevMessages) => [...prevMessages, message]);
+  const handleNewMessage = (text: string) => {
+      const userMessage = { role: 'user', content: text };
+      setMessages((prevMessages) => [...prevMessages, userMessage]);
   };
   const onBotResponse = (response: string) => {
     const botMessage = { role: 'assistant', content: response };
     setMessages((prevMessages) => [...prevMessages, botMessage]);
   };
-  // const callPredictApi = useCallback(async (message: string): Promise<string> => {
-  //   try {
-  //     const response = await fetch(`${import.meta.env.VITE_BACKEND_BASE_URL}/predict`, {
-  //       method: 'POST',
-  //       headers: { 'Content-Type': 'application/json' },
-  //       body: JSON.stringify({
-  //         text: message,
-  //         model_name: 'default_model.tar.gz',
-  //         sender_id: 'user_flow_tester',
-  //       }),
-  //     });
-  //     if (!response.ok) {
-  //       const err = await response.json().catch(() => ({}));
-  //       throw new Error(err.message || `Predict Error ${response.status}`);
-  //     }
-  //     const data = await response.json();
-  //     return data.response?.[0]?.text || 'Sorry, unexpected response.';
-  //   } catch (error) {
-  //     console.error('Predict API Error:', error);
-  //     return error instanceof Error ? error.message : 'Sorry, request failed.';
-  //   }
-  // }, []);
+
+  const callPredictApi = useCallback(async (message: string): Promise<string> => {
+    if (!isTrained) {
+        return "The bot hasn't been trained yet. Please train the model first.";
+    }
+    setLoading(true); // Indicate loading during prediction
+    try {
+      const response = await fetch(`${import.meta.env.VITE_BACKEND_BASE_URL}/predict`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: message,
+          model_name: 'default_model.tar.gz', // Make dynamic if needed
+          sender_id: 'user_flow_tester', // Use a consistent or dynamic sender ID
+        }),
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({})); // Try parsing error JSON
+        throw new Error(err.message || `Predict API Error: ${response.statusText} (${response.status})`);
+      }
+      const data = await response.json();
+      // Handle potentially complex responses (multiple messages, buttons etc.)
+      // For now, join text from all responses. Adjust as needed.
+      return data.response?.map((r: any) => r.text).join('\n') || 'Sorry, I received an empty response.';
+    } catch (error) {
+      console.error('Predict API Error:', error);
+      toast.error(error instanceof Error ? error.message : 'Prediction request failed.');
+      return error instanceof Error ? `Error: ${error.message}` : 'Sorry, the prediction request failed.';
+    } finally {
+        setLoading(false); // Stop loading indicator
+    }
+  }, [isTrained, setLoading]); // Depend on isTrained state
 
   // --- Animation Variants ---
   const fabMenuVariants = {
@@ -731,6 +810,7 @@ function FlowContent() {
           fitView
           className="bg-gradient-to-br from-indigo-50 via-white to-blue-50"
           deleteKeyCode={['Backspace', 'Delete']}
+          // connectionMode={ConnectionMode.Loose} // Optional: makes connecting easier
         >
           <Controls /> <Background />
         </ReactFlow>
@@ -746,7 +826,7 @@ function FlowContent() {
               transition={{ duration: 1.5, repeat: Infinity }}
             >
               {' '}
-              Training... <Bot size={16} className="animate-spin" />{' '}
+              Loading... <Bot size={16} className="animate-spin" />{' '}
             </motion.button>
           ) : (
             <motion.button
@@ -801,10 +881,11 @@ function FlowContent() {
                 exit="exit"
               >
                 {' '}
-                {[
+                {[ // Added Form Node to FAB
                   { type: 'start', Icon: PlayCircle, color: 'purple', title: 'Add Start' },
                   { type: 'intent', Icon: Bot, color: 'blue', title: 'Add Intent' },
                   { type: 'action', Icon: Zap, color: 'green', title: 'Add Action' },
+                  { type: 'form', Icon: ClipboardList, color: 'teal', title: 'Add Form' }, // Added Form
                   { type: 'end', Icon: FlagOff, color: 'red', title: 'Add End' },
                 ].map((nodeInfo) => {
                   const bg = colorClasses[nodeInfo.color]?.bg || 'bg-gray-500';
@@ -838,39 +919,30 @@ function FlowContent() {
             <Plus size={28} />{' '}
           </motion.button>{' '}
         </div>
+        {/* Conditionally render ChatBotWidget based on isTrained state */}
         {isTrained ? (
-          <Suspense fallback={<div>Loading...</div>}>
+          <Suspense fallback={<div className='absolute bottom-5 left-5 text-gray-500'>Loading Chat...</div>}>
             <ChatBotWidget
-              callApi={async (message) => {
-                const data = await fetch(`${import.meta.env.VITE_BACKEND_BASE_URL}/predict`, {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                  },
-                  body: JSON.stringify({
-                    text: message,
-                    sender_id: 'user1',
-                    model_name: 'default_model.tar.gz',
-                  }),
-                });
-                // console.log('API response:', data);
-
-                const res = await data.json();
-                return res.response[0].text;
-              }}
-              handleNewMessage={handleNewMessage}
+              callApi={callPredictApi} // Use the memoized predict function
+              handleNewMessage={handleNewMessage} // Pass message handlers
               onBotResponse={onBotResponse}
               messages={messages}
-              primaryColor="#4F46E5"
+              primaryColor="#4F46E5" // Example color
             />
           </Suspense>
-        ) : null}
+        ) : (
+           <div className="absolute bottom-6 left-6 p-3 bg-yellow-100 text-yellow-800 text-xs rounded-md shadow border border-yellow-300 z-10">
+               Train the model to enable the chat widget.
+           </div>
+        )}
       </div>
 
       {/* Sidebar (No Animation Wrapper) */}
-      {isSidebarOpen && selectedNode && isConfigurableNode(selectedNode) && (
+      {/* Conditionally render based on selectedNode and isConfigurableNode */}
+       {isSidebarOpen && selectedNode && isConfigurableNode(selectedNode) && (
         <div
-          key={selectedNode.id}
+          // Use selectedNode.id + type as key to force re-render on node change
+          key={`${selectedNode.id}-${selectedNode.type}`}
           className="w-80 h-full flex-shrink-0 bg-white shadow-lg border-l border-gray-200 flex flex-col"
         >
           <Sidebar
@@ -880,6 +952,7 @@ function FlowContent() {
             onUpdateStartNode={updateStartNode}
             onUpdateIntent={updateIntentNode}
             onUpdateAction={updateActionNode}
+            onUpdateForm={updateFormNode} // Pass form update handler
             onAddNewIntentDefinition={handleAddNewIntentDefinition}
             onAddNewActionDefinition={handleAddNewActionDefinition}
             onClose={clearSelectionAndCloseSidebar}
@@ -914,6 +987,8 @@ const css = `
 .btn-disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-toggle { background-color: white; border: 1px solid #d1d5db; color: #4b5563; } .btn-toggle:hover { background-color: #f9fafb; }
 .btn-toggle.active { background-color: #eff6ff; border-color: #93c5fd; color: #2563eb; font-weight: 600; }
+/* Added teal active state */
+.btn-toggle.teal-active { background-color: #ccfbf1; border-color: #5eead4; color: #0f766e; font-weight: 500; }
 
 .input, .textarea, .select { display: block; width: 100%; border-radius: 0.375rem; border: 1px solid #d1d5db; padding: 0.5rem 0.75rem; font-size: 0.875rem; line-height: 1.25rem; box-shadow: inset 0 1px 2px 0 rgb(0 0 0 / 0.05); }
 .input:focus, .textarea:focus, .select:focus { outline: 2px solid transparent; outline-offset: 2px; border-color: #60a5fa; box-shadow: 0 0 0 2px #bfdbfe; }
