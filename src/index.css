@@ -1,3 +1,107 @@
+/* src/index.css */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Extracted Global Styles (Previously inline in Flow/Sidebar) */
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-md border border-transparent font-semibold transition-colors duration-200 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-sm {
+    @apply px-3 py-1.5 text-sm rounded;
+  }
+  .btn-xs {
+    @apply px-2 py-0.5 text-xs rounded-sm;
+  }
+  .btn-circle {
+    @apply rounded-full w-14 h-14 p-0; /* Default size from Flow.tsx */
+  }
+   .btn-circle.btn-sm { /* Specific size for FAB menu items */
+    @apply w-10 h-10;
+  }
+
+  .btn-primary {
+    @apply bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-indigo-300;
+  }
+  .btn-secondary {
+    @apply bg-gray-200 text-gray-800 border-gray-300 hover:bg-gray-300;
+  }
+  .btn-neutral {
+     @apply bg-neutral-700 text-white hover:bg-neutral-800;
+  }
+  .btn-ghost {
+    @apply bg-transparent border-none hover:bg-gray-100 text-current;
+  }
+   .btn-disabled { /* Explicit disabled styling */
+    @apply opacity-50 cursor-not-allowed;
+  }
+
+  /* Toggle Button Styles */
+  .btn-toggle {
+    @apply bg-white border border-gray-300 text-gray-600 hover:bg-gray-50;
+  }
+  .btn-toggle.active { /* Base active state */
+    @apply bg-blue-100 border-blue-300 text-blue-800 font-medium;
+  }
+   /* Specific active states per color */
+  .btn-toggle.teal-active {
+    @apply bg-teal-100 border-teal-300 text-teal-800 font-medium;
+  }
+   /* Add more colors (green-active, indigo-active) if needed */
+
+
+  /* Form Inputs */
+  .input, .textarea, .select {
+     @apply block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-indigo-500;
+     /* Consider adding placeholder styles */
+  }
+   .input-sm, .textarea-sm, .select-sm {
+    @apply px-2 py-1.5 text-sm;
+  }
+   .input-xs, .textarea-xs, .select-xs {
+    @apply px-2 py-1 text-xs;
+  }
+   /* If using @tailwindcss/forms */
+  .form-checkbox {
+    @apply rounded border-gray-300 text-indigo-600 shadow-sm focus:border-indigo-300 focus:ring focus:ring-offset-0 focus:ring-indigo-200 focus:ring-opacity-50;
+  }
+   .form-checkbox:checked {
+     /* Base checked color - can be overridden */
+    @apply border-transparent bg-indigo-600;
+   }
+   /* Specific colors for checked state */
+    .checkbox-primary:checked {
+        @apply border-transparent bg-indigo-600; /* Default primary */
+        /* Use DaisyUI variable if available: [--chkbg:theme(colors.indigo.600)] */
+    }
+     .checkbox-teal:checked {
+        @apply border-transparent bg-teal-600;
+         /* [--chkbg:theme(colors.teal.600)] */
+     }
+
+
+  /* Scrollbar */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: theme('colors.gray.300') theme('colors.gray.100');
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    @apply bg-gray-100 rounded-full;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    @apply bg-gray-300 rounded-full border-2 border-solid border-gray-100;
+  }
+  .hover\:scrollbar-thumb-gray-400:hover::-webkit-scrollbar-thumb {
+    @apply bg-gray-400;
+  }
+}
+
+/* Ensure base styles are included */
+body {
+  @apply font-sans antialiased;
+}
