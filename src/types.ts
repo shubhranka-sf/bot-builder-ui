@@ -5,9 +5,12 @@
 export interface ActionDefinition {
   id?: string; // Optional ID, might be added when stored
   title: string;
-  name: string; // Unique identifier
-  value: string; // Text content or function name
+  name: string; // Unique identifier (e.g., utter_greet, action_lookup_db)
   valueType: 'text' | 'function';
+  // Value is used for function name if valueType is 'function'
+  // For text, 'variations' is preferred. 'value' might hold the first variation or be ignored.
+  value?: string;
+  variations?: string[]; // ADDED: For text responses
 }
 
 export interface AvailableFunction {
@@ -18,20 +21,26 @@ export interface AvailableFunction {
 export interface IntentDefinition {
   id: string;
   label: string;
-  examples?: string[]; // Added optional examples array
+  examples?: string[];
+  entities?: string[]; // Store unique entity names found in examples
 }
 
 // --- Node Data Types ---
 export interface StartNodeData {
   storyName?: string; // Optional initially, will be added
+  storyId?: string; // Optional story ID
+  label?: string; // Keep label for potential display consistency if needed
 }
 
 export interface IntentNodeData {
   intentId: string;
   examples?: string[];
+  entities?: string[]; // Reflect entities of the linked definition
+  label?: string; // Display label from definition
 }
 
-export interface ActionNodeData extends Omit<ActionDefinition, 'id'> {} // Action node data IS the definition
+// ActionNodeData mirrors ActionDefinition but omits 'id' as it's part of the Node itself
+export interface ActionNodeData extends Omit<ActionDefinition, 'id'> {}
 
 export interface EndNodeData {
   // Currently no specific data needed for EndNode

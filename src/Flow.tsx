@@ -15,6 +15,7 @@ import ReactFlow, {
   useReactFlow,
   ReactFlowProvider,
   XYPosition,
+  // ConnectionMode // Optional import
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { Bot, Zap, FlagOff, Plus, Settings, PlayCircle } from 'lucide-react';
@@ -31,13 +32,22 @@ import {
   ActionNodeData,
   IntentDefinition,
 } from './types';
-import { mockDefinedActions, mockIntents, defaultEdgeOptions, getId } from './data/mockData';
+// Import processed edges if using defaults application in mockData.ts
+import {
+  mockDefinedActions,
+  mockIntents,
+  initialNodes as initialNodesData,
+  processedInitialEdges,
+  defaultEdgeOptions,
+  getId,
+} from './data/mockData';
+const ChatBotWidget = React.lazy(() => import('./components/ChatBotWidget'));
 import { useAtom } from 'jotai';
 import { EdgesAtom, isLoadingAtom, NodesAtom } from './store/flowAtom';
 import { useDebouncedCallback } from 'use-debounce';
-import { toast } from 'react-toastify';
-import { isBotTrainedAtom } from './state/flowAtom';
-const ChatBotWidget = React.lazy(() => import('./components/ChatBotWidget'));
+import { toast } from 'react-toastify'; // Removed ToastContainer import here
+import 'react-toastify/dist/ReactToastify.css';
+import { parseEntitiesFromExamples } from './utils/entityParser';
 
 const colorClasses: { [key: string]: { bg: string; hoverBg: string } } = {
   purple: { bg: 'bg-purple-500', hoverBg: 'hover:bg-purple-600' },
@@ -47,28 +57,29 @@ const colorClasses: { [key: string]: { bg: string; hoverBg: string } } = {
   gray: { bg: 'bg-gray-500', hoverBg: 'hover:bg-gray-600' },
 };
 
-// Helper function to check if node is configurable
 function isConfigurableNode(node: Node | null): boolean {
   if (!node) return false;
   return node.type === 'start' || node.type === 'intent' || node.type === 'action';
 }
 
-// Helper type for exported story step
 type StoryStep = {
   node: 'intent' | 'action';
   name: string;
 };
 
 function FlowContent() {
-  const [nodes, setNodes] =
-    useAtom<Node<StartNodeData | IntentNodeData | ActionNodeData | any>[]>(NodesAtom);
-  const [edges, setEdges] = useAtom<Edge[]>(EdgesAtom);
+  // Use Jotai atoms for state
+  const [nodes, setNodes] = useAtom(NodesAtom);
+  const [edges, setEdges] = useAtom(EdgesAtom);
+  // Local component state
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
   const [isFabMenuOpen, setIsFabMenuOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [messages, setMessages] = useState([]);
+  const [messages, setMessages] = useState<Array<{ role: string; content: string }>>([]);
   const fabRef = useRef<HTMLDivElement>(null);
   const {
+    setViewport,
+    getViewport,
     setNodes: rfSetNodes,
     getNodes,
     getEdges,
@@ -77,21 +88,43 @@ function FlowContent() {
     getNode,
   } = useReactFlow();
 
+  // Global definitions state
   const [definedActions, setDefinedActions] = useState<ActionDefinition[]>(mockDefinedActions);
   const [intents, setIntents] = useState<IntentDefinition[]>(mockIntents);
   const [isLoading, setLoading] = useAtom(isLoadingAtom);
+
+  // Initialize nodes/edges from local storage or mock data ONCE
+  useEffect(() => {
+    const storedNodes = localStorage.getItem('nodes');
+    const storedEdges = localStorage.getItem('edges');
+
+    if (storedNodes && storedNodes !== '[]') {
+      console.log('Loading nodes from localStorage');
+      setNodes(JSON.parse(storedNodes));
+    } else {
+      console.log('Initializing nodes from mock data');
+      // Use initialNodesData directly from mockData import
+      setNodes(initialNodesData);
+    }
+
+    if (storedEdges && storedEdges !== '[]') {
+      console.log('Loading edges from localStorage');
+      setEdges(JSON.parse(storedEdges));
+    } else {
+      console.log('Initializing edges from mock data');
+      setEdges(processedInitialEdges); // Use edges with defaults applied
+    }
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Empty dependency array ensures this runs only once on mount
+
   const [isTrained, setIsTrained] = useAtom(isBotTrainedAtom);
   const nodeTypes: NodeTypes = useMemo(
-    () => ({
-      start: StartNode,
-      intent: IntentNode,
-      action: ActionNode,
-      end: EndNode,
-    }),
+    () => ({ start: StartNode, intent: IntentNode, action: ActionNode, end: EndNode }),
     []
   );
 
-  // --- Callbacks (onNodesChange, onEdgesChange, onConnect - unchanged) ---
+  // --- Callbacks ---
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => setNodes((nds) => applyNodeChanges(changes, nds)),
     [setNodes]
@@ -106,8 +139,7 @@ function FlowContent() {
     [setEdges]
   );
 
-  // --- Node Update Callbacks (updateStartNode, updateIntentNode, updateActionNode - unchanged) ---
-  // Generic update function
+  // --- Node Update Logic ---
   const updateNode = useCallback(
     <T extends StartNodeData | IntentNodeData | ActionNodeData>(
       nodeId: string,
@@ -121,97 +153,128 @@ function FlowContent() {
             : node
         )
       );
-
       setSelectedNode((prev) =>
         prev && prev.id === nodeId && prev.type === nodeType
           ? { ...prev, data: { ...prev.data, ...updateData } }
           : prev
       );
     },
-    [setNodes, setSelectedNode]
+    [setNodes]
   );
 
-  // Start node updater
   const updateStartNode = useCallback(
-    (nodeId: string, newStoryName: string) => {
-      updateNode(nodeId, 'start', {
-        label: newStoryName,
-        storyName: newStoryName,
-      });
+    (nodeId: string, newStoryName: string, newStoryId?: string) => {
+      const updateData: Partial<StartNodeData> = { storyName: newStoryName, label: newStoryName };
+      if (newStoryId !== undefined) updateData.storyId = newStoryId;
+      updateNode<StartNodeData>(nodeId, 'start', updateData);
     },
     [updateNode]
   );
 
-  // Intent node updater
   const updateIntentNode = useCallback(
     (nodeId: string, newIntentId: string, newExamples?: string[]) => {
       const intentDefinition = intents.find((i) => i.id === newIntentId);
       const finalExamples = newExamples ?? intentDefinition?.examples ?? [];
-
-      updateNode(nodeId, 'intent', {
+      const parsedEntities = parseEntitiesFromExamples(finalExamples);
+      updateNode<IntentNodeData>(nodeId, 'intent', {
         intentId: newIntentId,
         examples: finalExamples,
+        entities: parsedEntities,
+        label: intentDefinition?.label,
       });
-
       if (newExamples !== undefined) {
         setIntents((prevIntents) => {
-          const intentIndex = prevIntents.findIndex((intent) => intent.id === newIntentId);
+          const intentIndex = prevIntents.findIndex((i) => i.id === newIntentId);
           if (intentIndex > -1) {
             const updatedIntents = [...prevIntents];
             updatedIntents[intentIndex] = {
               ...updatedIntents[intentIndex],
               examples: finalExamples,
+              entities: parsedEntities,
             };
-            console.log('Updated intent examples:', updatedIntents[intentIndex]);
-
             return updatedIntents;
-          } else {
-            console.warn(`Intent definition ID "${newIntentId}" not found during edit save.`);
-            return prevIntents;
           }
+          return prevIntents;
         });
       }
     },
     [updateNode, intents, setIntents]
   );
 
-  // Action node updater
+  // Updated for variations
   const updateActionNode = useCallback(
     (nodeId: string, actionData: Partial<ActionNodeData>) => {
       const nodeToUpdate = getNode(nodeId);
       if (!nodeToUpdate || nodeToUpdate.type !== 'action') return;
 
-      const actionDefinition = definedActions.find((a) => a.name === actionData.name);
-      const isChangeAction = actionData.name && Object.keys(actionData).length === 1;
+      const isChangingWhichAction =
+        actionData.name &&
+        Object.keys(actionData).length === 1 &&
+        actionData.name !== nodeToUpdate.data?.name;
+      let finalActionData: ActionNodeData;
 
-      let fullActionData: ActionNodeData;
-      if (isChangeAction && actionDefinition) {
-        fullActionData = { ...actionDefinition };
+      if (isChangingWhichAction && actionData.name) {
+        const newActionDefinition = definedActions.find((a) => a.name === actionData.name);
+        if (newActionDefinition) {
+          // Important: Create a copy of the definition for the node data
+          finalActionData = { ...newActionDefinition };
+        } else {
+          console.warn(`Selected action definition "${actionData.name}" not found.`);
+          finalActionData = {
+            name: actionData.name,
+            title: actionData.name,
+            valueType: 'text',
+            variations: [''],
+          }; // Basic fallback
+        }
       } else {
-        fullActionData = {
-          ...(actionDefinition || {}),
-          ...actionData,
+        // Merge edits onto current node data, prioritize incoming actionData
+        const baseData = nodeToUpdate.data || {};
+        const determinedType = actionData.valueType || baseData.valueType || 'text';
+        const mergedVariations =
+          determinedType === 'text'
+            ? (actionData.variations ?? baseData.variations ?? [''])
+            : undefined;
+
+        finalActionData = {
+          name: actionData.name || baseData.name || `action_${nodeId.slice(0, 4)}`,
           title:
-            actionData.title || actionDefinition?.title || actionData.name || 'Untitled Action',
-          name: actionData.name || actionDefinition?.name || `action_${nodeId.slice(0, 4)}`,
-          value: actionData.value ?? actionDefinition?.value ?? '',
-          valueType: actionData.valueType || actionDefinition?.valueType || 'text',
+            actionData.title ||
+            baseData.title ||
+            actionData.name ||
+            baseData.name ||
+            'Untitled Action',
+          valueType: determinedType,
+          // Handle value/variations based on the *determined* type
+          value:
+            determinedType === 'function'
+              ? (actionData.value ?? baseData.value ?? '') // Use func value
+              : (mergedVariations?.[0] ?? ''), // Use first variation for value
+          variations: mergedVariations,
         };
       }
 
-      updateNode(nodeId, 'action', fullActionData);
+      updateNode<ActionNodeData>(nodeId, 'action', finalActionData);
 
-      if (!isChangeAction && fullActionData.name) {
+      // Update global definition if not just changing which action is selected
+      if (!isChangingWhichAction && finalActionData.name) {
         setDefinedActions((prevActions) => {
-          const index = prevActions.findIndex((a) => a.name === fullActionData.name);
+          const index = prevActions.findIndex((a) => a.name === finalActionData.name);
+          const definitionToUpdate = {
+            ...finalActionData,
+            id: index > -1 ? prevActions[index].id : `action_${Date.now()}`,
+          }; // Preserve or create ID
+
           if (index > -1) {
             const updated = [...prevActions];
-            const existingId = updated[index].id;
-            updated[index] = { ...fullActionData, id: existingId };
+            updated[index] = definitionToUpdate; // Overwrite existing
+            console.log('Updated action definition:', updated[index]);
             return updated;
           } else {
-            console.warn(`Action definition "${fullActionData.name}" not found. Adding new.`);
-            return [...prevActions, fullActionData];
+            console.warn(
+              `Action definition "${finalActionData.name}" not found during edit. Adding as new.`
+            );
+            return [...prevActions, definitionToUpdate]; // Add new
           }
         });
       }
@@ -219,16 +282,15 @@ function FlowContent() {
     [getNode, definedActions, setDefinedActions, updateNode]
   );
 
-  // --- onSelectionChange, clearSelectionAndCloseSidebar, getCenterPosition (unchanged) ---
+  // --- Selection & UI ---
   const onSelectionChange = useCallback(({ nodes: selectedNodes }: OnSelectionChangeParams) => {
     const newSelectedNode = selectedNodes.length === 1 ? selectedNodes[0] : null;
+    const isConfigurable = newSelectedNode && isConfigurableNode(newSelectedNode);
     setSelectedNode(newSelectedNode);
     setIsFabMenuOpen(false);
-    // Close sidebar if no configurable node is selected
-    if (!newSelectedNode || !isConfigurableNode(newSelectedNode)) {
-      setIsSidebarOpen(false);
-    }
+    setIsSidebarOpen(!!isConfigurable);
   }, []);
+
   const clearSelectionAndCloseSidebar = useCallback(() => {
     setSelectedNode(null);
     setIsFabMenuOpen(false);
@@ -237,38 +299,59 @@ function FlowContent() {
   }, [rfSetNodes, getNodes]);
 
   const getCenterPosition = useCallback((): XYPosition => {
-    const fp = document.querySelector('.react-flow__pane');
-    if (fp) {
-      const b = fp.getBoundingClientRect();
-      return screenToFlowPosition({ x: b.width / 2 - 75, y: b.height / 4 });
+    const flowPane = document.querySelector('.react-flow__pane');
+    if (flowPane) {
+      const bounds = flowPane.getBoundingClientRect();
+      return screenToFlowPosition({ x: bounds.width / 2 - 100, y: bounds.height / 4 }); // Adjust offset
     }
-    return { x: 200 + Math.random() * 100, y: 100 + Math.random() * 100 };
+    return { x: 250 + Math.random() * 100, y: 150 + Math.random() * 100 };
   }, [screenToFlowPosition]);
 
-  // --- handleAddNode (Updated to allow multiple start nodes) ---
+  // --- Add Node (Updated for variations) ---
   const handleAddNode = useCallback(
     (type: 'intent' | 'action' | 'end' | 'start') => {
       const position = getCenterPosition();
       let newNodeData: any = {};
-
       if (type === 'start') {
-        // REMOVED the check for existing start node
-        newNodeData = { storyName: `New Story ${getId().slice(-4)}` };
+        newNodeData = {
+          storyName: `New Story`,
+          storyId: `story_${getId().slice(-4)}`,
+          label: `New Story`,
+        };
       } else if (type === 'intent') {
         const defaultIntent = intents[0] || {
-          id: 'intent_default',
-          label: 'Default Intent',
+          id: 'intent_new',
+          label: 'New Intent',
           examples: [],
+          entities: [],
         };
-        newNodeData = { intentId: defaultIntent.id, examples: defaultIntent.examples || [] };
+        newNodeData = {
+          intentId: defaultIntent.id,
+          examples: [...(defaultIntent.examples || [])],
+          entities: [...(defaultIntent.entities || [])],
+          label: defaultIntent.label,
+        };
       } else if (type === 'action') {
         const defaultAction = definedActions[0] || {
           title: 'New Action',
-          name: 'new_action',
-          value: 'Configure me...',
+          name: `action_new_${getId().slice(-4)}`,
           valueType: 'text',
+          variations: ['Configure me...'],
         };
-        newNodeData = { ...defaultAction };
+        // Important: Create a *copy* of the definition data for the node
+        newNodeData = {
+          title: defaultAction.title,
+          name: defaultAction.name,
+          valueType: defaultAction.valueType,
+          value:
+            defaultAction.valueType === 'function'
+              ? defaultAction.value
+              : defaultAction.variations?.[0],
+          variations:
+            defaultAction.valueType === 'text'
+              ? [...(defaultAction.variations || [''])]
+              : undefined,
+        };
       } else if (type === 'end') {
         newNodeData = {};
       }
@@ -277,141 +360,241 @@ function FlowContent() {
       addNodes(newNode);
       setIsFabMenuOpen(false);
     },
-    // Removed getNodes from dependency as it's not used here anymore for the check
     [addNodes, getCenterPosition, definedActions, intents]
   );
 
-  // --- Add/Define Callbacks (handleAddNewActionDefinition, handleAddNewIntentDefinition - unchanged) ---
-  const handleAddNewActionDefinition = useCallback(
-    (newAction: ActionDefinition) => {
-      setDefinedActions((prev) => [...prev, newAction]);
-      // console.log('Added new action definition:', newAction);
-    },
-    [setDefinedActions]
-  );
+  // --- Add Definitions (Updated for variations) ---
   const handleAddNewIntentDefinition = useCallback(
     (newIntent: IntentDefinition) => {
       setIntents((prev) => {
-        if (prev.some((intent) => intent.id === newIntent.id)) {
-          alert(`Intent ID "${newIntent.id}" already exists.`);
+        if (prev.some((i) => i.id === newIntent.id)) {
+          toast.error(`Intent ID "${newIntent.id}" exists.`);
           return prev;
         }
+        toast.success(`Intent "${newIntent.label}" defined.`);
         return [...prev, newIntent];
       });
-      // console.log('Added new intent definition:', newIntent);
     },
     [setIntents]
   );
-  const toggleFabMenu = useCallback(() => {
-    setIsFabMenuOpen((prev) => !prev);
-  }, []);
+  const handleAddNewActionDefinition = useCallback(
+    (newAction: ActionDefinition) => {
+      setDefinedActions((prev) => {
+        if (prev.some((a) => a.name === newAction.name)) {
+          toast.error(`Action Name "${newAction.name}" exists.`);
+          return prev;
+        }
+        toast.success(`Action "${newAction.title || newAction.name}" defined.`);
+        // Ensure correct structure based on type before adding
+        const completeAction = {
+          id: `action_${Date.now()}`,
+          ...newAction, // Spread incoming data (name, title, valueType)
+          value:
+            newAction.valueType === 'function'
+              ? newAction.value || ''
+              : newAction.variations?.[0] || '',
+          variations:
+            newAction.valueType === 'text'
+              ? newAction.variations && newAction.variations.length > 0
+                ? newAction.variations
+                : ['']
+              : undefined,
+        };
+        // Clean up potentially undefined fields if necessary (optional)
+        if (completeAction.valueType === 'text') delete completeAction.value; // Or keep first variation as value
+        if (completeAction.valueType === 'function') delete completeAction.variations;
 
-  // --- Export Flow Data (Unchanged - already handles multiple start nodes) ---
+        return [...prev, completeAction];
+      });
+    },
+    [setDefinedActions]
+  );
+
+  const toggleFabMenu = useCallback(() => setIsFabMenuOpen((prev) => !prev), []);
+
+  // --- Export Flow Data (Updated for variations) ---
   const exportFlowData = useCallback(async () => {
-    setLoading(true); // Set loading to true immediately when starting the process
-
+    setLoading(true);
     const allNodes = getNodes();
     const allEdges = getEdges();
 
-    // 1. Format Intents
-    const formattedIntents = intents.map((intent) => ({
-      name: intent.id,
-      examples: intent.examples || [],
-      entities: [],
+    // 1. Format Intents (Unchanged)
+    const formattedIntents = intents.map((i) => ({
+      name: i.id,
+      examples: i.examples || [],
+      entities: i.entities || [],
     }));
 
-    // 2. Format Actions
-    const formattedActions = definedActions.map((action) => {
-      let type: 'text' | 'action' | 'button' = 'text';
-      let value: any = undefined;
-      if (action.valueType === 'function' || action.name.startsWith('action_')) {
-        type = 'action';
-      } else if (action.name.startsWith('utter_')) {
-        if (action.valueType === 'text') {
-          try {
-            const parsedValue = JSON.parse(action.value);
-            if (
-              Array.isArray(parsedValue) &&
-              parsedValue.every(
-                (item) =>
-                  typeof item === 'object' && item !== null && 'title' in item && 'payload' in item
-              )
-            ) {
-              type = 'button';
-              value = parsedValue;
-            } else {
-              type = 'text';
-              value = action.value;
-            }
-          } catch (e) {
-            type = 'text';
-            value = action.value;
-          }
-        } else {
-          type = 'text';
-          value = action.value;
-        }
-      } else {
-        type = 'text';
-        value = action.value;
-      }
-      const formattedAction: any = { type, name: action.name };
-      if (value !== undefined && (type === 'text' || type === 'button')) {
-        formattedAction.value = value;
-      }
-      return formattedAction;
+    // Collect entities while formatting intents (optimization)
+    const entitiesSet = new Set();
+    intents.forEach((intent) => {
+      intent.entities?.forEach((entity) => entitiesSet.add(entity));
     });
 
-    // 3. Generate Stories (iterates through all start nodes)
-    const stories: { name: string; steps: StoryStep[] }[] = [];
+    // 2. Format Actions (Unchanged)
+    const formattedActions = definedActions.map((action) => {
+      if (action.valueType === 'function') {
+        return { type: 'action', name: action.name };
+      } else {
+        const value = action.variations && action.variations.length > 0 ? action.variations : [''];
+
+        // Check if the value looks like Rasa buttons JSON
+        let isButtonFormat = false;
+        if (
+          value.length === 1 &&
+          typeof value[0] === 'string' &&
+          value[0].trim().startsWith('[') &&
+          value[0].includes('"title"')
+        ) {
+          try {
+            const parsed = JSON.parse(value[0]);
+            isButtonFormat =
+              Array.isArray(parsed) &&
+              parsed.every(
+                (item) =>
+                  typeof item === 'object' && item !== null && 'title' in item && 'payload' in item
+              );
+            if (isButtonFormat) {
+              return { type: 'button', name: action.name, value: parsed };
+            }
+          } catch (e) {
+            /* Not JSON or not button format */
+          }
+        }
+
+        return { type: 'text', name: action.name, variations: value };
+      }
+    });
+
+    // 3. Generate Stories using Topological Sort
+    const stories = [];
+
+    // Create efficient lookup maps
+    const nodeMap = Object.fromEntries(allNodes.map((node) => [node.id, node]));
+    const outgoingEdges = {};
+    const incomingEdges = {};
+
+    // Initialize edge tracking
+    allNodes.forEach((node) => {
+      outgoingEdges[node.id] = [];
+      incomingEdges[node.id] = [];
+    });
+
+    // Populate edge maps
+    allEdges.forEach((edge) => {
+      outgoingEdges[edge.source].push(edge);
+      incomingEdges[edge.target].push(edge);
+    });
+
+    // Find start nodes
     const startNodes = allNodes.filter((node) => node.type === 'start');
     if (startNodes.length === 0) {
       console.warn('No Start Nodes found.');
+      toast.warn('No Start Nodes found.');
+      setLoading(false);
+      return;
     }
 
+    // Process each story from start to end using topological ordering
     startNodes.forEach((startNode) => {
-      const storyId = startNode.data?.storyId || `Story_${startNode.id}`;
-      const steps: StoryStep[] = [];
-      const visitedInPath = new Set<string>();
-      let currentNodeId: string | null = startNode.id;
-      while (currentNodeId) {
-        if (visitedInPath.has(currentNodeId)) {
-          console.warn(`Loop detected in story '${storyId}' at ${currentNodeId}.`);
-          break;
+      const storyName = startNode.data?.storyId || `Generated_Story_${startNode.id}`;
+
+      // Perform topological sort from this start node
+      const visited = new Set();
+      const path = []; // Will store nodes in topological order
+      const onStack = new Set(); // For cycle detection
+      let hasCycle = false;
+
+      function dfs(nodeId) {
+        if (hasCycle || nodeMap[nodeId].type === 'end') {
+          return;
         }
-        visitedInPath.add(currentNodeId);
-        const currentNode = allNodes.find((n) => n.id === currentNodeId);
-        if (!currentNode) break;
-        const outgoingEdge = allEdges.find((edge) => edge.source === currentNodeId);
-        if (!outgoingEdge) break;
-        const nextNodeId = outgoingEdge.target;
-        const nextNode = allNodes.find((n) => n.id === nextNodeId);
-        if (!nextNode || nextNode.type === 'end') break;
-        if (nextNode.type === 'intent' && nextNode.data?.intentId) {
-          steps.push({ node: 'intent', name: nextNode.data.intentId });
-        } else if (nextNode.type === 'action' && nextNode.data?.name) {
-          steps.push({ node: 'action', name: nextNode.data.name });
-        } else {
-          console.warn(`Skipping unsupported node type '${nextNode.type}' in story '${storyId}'.`);
+
+        visited.add(nodeId);
+        onStack.add(nodeId);
+
+        for (const edge of outgoingEdges[nodeId] || []) {
+          const nextId = edge.target;
+
+          if (!visited.has(nextId)) {
+            dfs(nextId);
+          } else if (onStack.has(nextId)) {
+            // Cycle detected
+            hasCycle = true;
+            console.warn(`Loop detected in story '${storyName}' at ${nextId}.`);
+            toast.warn(`Loop in story '${storyName}'.`);
+            return;
+          }
         }
-        currentNodeId = nextNodeId;
+
+        onStack.delete(nodeId);
+        path.unshift(nodeId); // Add to front for reverse topological order
       }
-      stories.push({ name: storyId, steps });
+
+      // Start DFS from the start node
+      dfs(startNode.id);
+
+      if (hasCycle) {
+        return; // Skip this story due to cycle
+      }
+
+      // Convert topological order to story steps (skip start node)
+      const steps = [];
+
+      for (let i = 0; i < path.length; i++) {
+        const nodeId = path[i];
+        const node = nodeMap[nodeId];
+
+        // Skip start nodes in the steps
+        if (node.type === 'start') {
+          continue;
+        }
+
+        // Skip end nodes in the steps
+        if (node.type === 'end') {
+          continue;
+        }
+
+        if (node.type === 'intent' && node.data?.intentId) {
+          steps.push({ node: 'intent', name: node.data.intentId });
+        } else if (node.type === 'action' && node.data?.name) {
+          steps.push({ node: 'action', name: node.data.name });
+        }
+      }
+
+      if (steps.length > 0) {
+        stories.push({ name: storyName, steps });
+      } else {
+        console.warn(`Story '${storyName}' has no steps.`);
+      }
     });
 
+    // Format entities
+    const formattedEntities = Array.from(entitiesSet).map((name) => ({
+      name,
+    }));
+
     // 4. Assemble Final JSON
-    const exportData = { intents: formattedIntents, actions: formattedActions, stories: stories };
+    const exportData = {
+      intents: formattedIntents,
+      actions: formattedActions,
+      entities: formattedEntities,
+      stories: stories,
+    };
+    console.log('Export Data Payload:', JSON.stringify(exportData, null, 2));
 
-    console.log('Exported Data:', JSON.stringify(exportData, null, 2));
+    // 5. Send to Backend API
+    if (stories.length === 0) {
+      toast.error('No valid stories generated.');
+      setLoading(false);
+      return;
+    }
 
-    // Use `toast.promise` to show loading and handle success/failure
-    await toast
-      .promise(
+    try {
+      await toast.promise(
         fetch(`${import.meta.env.VITE_BACKEND_BASE_URL}/train`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(exportData),
         })
           .then((response) => {
@@ -432,49 +615,90 @@ function FlowContent() {
             throw error;
           }),
         {
-          pending: 'Building Bot...',
-          success: 'Bot Builded Successfully!',
-          error: 'Failed to Build Bot',
-        },
-        { autoClose: 2000 }
-      )
-      .finally(() => {
-        setLoading(false);
-      });
-  }, [intents, definedActions, getNodes, getEdges]);
+          pending: 'Training model...',
+          success: 'Model training started!',
+          error: {
+            render({ data }) {
+              console.log('Training Error:', data);
 
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (fabRef.current && !fabRef.current.contains(event.target as Node)) {
-        setIsFabMenuOpen(false);
-      }
-    };
-    if (isFabMenuOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-    } else {
-      document.removeEventListener('mousedown', handleClickOutside);
+              return `Training failed: ${data?.message || 'Unknown error'}`;
+            },
+          },
+        },
+        { autoClose: 3000 }
+      );
+    } catch (error) {
+      console.error('Export Error:', error);
+    } finally {
+      setLoading(false);
     }
+  }, [intents, definedActions, getNodes, getEdges, setLoading]);
+  // --- useEffects & Chatbot ---
+  useEffect(() => {
+    // Click outside FAB
+    const handleClickOutside = (e: MouseEvent) => {
+      if (fabRef.current && !fabRef.current.contains(e.target as Node)) setIsFabMenuOpen(false);
+    };
+    if (isFabMenuOpen) document.addEventListener('mousedown', handleClickOutside);
+    else document.removeEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isFabMenuOpen]);
 
-  const saveNodesToLocalStorage = useDebouncedCallback((nodes) => {
-    localStorage.setItem('nodes', JSON.stringify(nodes));
-    console.log('Saving nodes to localStorage:', nodes);
+  const saveNodesToLocalStorage = useDebouncedCallback((nodesToSave: Node[]) => {
+    try {
+      localStorage.setItem('nodes', JSON.stringify(nodesToSave.map((n) => ({ ...n }))));
+      console.log('Saved nodes:', nodesToSave.length);
+    } catch (e) {
+      console.error('LS Node Save Error:', e);
+    }
   }, 1000);
   useEffect(() => {
-    saveNodesToLocalStorage(nodes);
+    if (nodes.length > 0) saveNodesToLocalStorage(nodes);
   }, [nodes, saveNodesToLocalStorage]);
 
-  // Debounced function for edges
-  const saveEdgesToLocalStorage = useDebouncedCallback((edges) => {
-    localStorage.setItem('edges', JSON.stringify(edges));
-    console.log('Saving edges to localStorage:', edges);
+  const saveEdgesToLocalStorage = useDebouncedCallback((edgesToSave: Edge[]) => {
+    try {
+      localStorage.setItem('edges', JSON.stringify(edgesToSave.map((e) => ({ ...e }))));
+      console.log('Saved edges:', edgesToSave.length);
+    } catch (e) {
+      console.error('LS Edge Save Error:', e);
+    }
   }, 1000);
   useEffect(() => {
-    saveEdgesToLocalStorage(edges);
+    if (edges.length > 0) saveEdgesToLocalStorage(edges);
   }, [edges, saveEdgesToLocalStorage]);
 
-  // --- Animation Variants (unchanged) ---
+  const handleNewMessage = (message: string) => {
+    setMessages((prevMessages) => [...prevMessages, message]);
+  };
+  const onBotResponse = (response: string) => {
+    const botMessage = { role: 'assistant', content: response };
+    setMessages((prevMessages) => [...prevMessages, botMessage]);
+  };
+  // const callPredictApi = useCallback(async (message: string): Promise<string> => {
+  //   try {
+  //     const response = await fetch(`${import.meta.env.VITE_BACKEND_BASE_URL}/predict`, {
+  //       method: 'POST',
+  //       headers: { 'Content-Type': 'application/json' },
+  //       body: JSON.stringify({
+  //         text: message,
+  //         model_name: 'default_model.tar.gz',
+  //         sender_id: 'user_flow_tester',
+  //       }),
+  //     });
+  //     if (!response.ok) {
+  //       const err = await response.json().catch(() => ({}));
+  //       throw new Error(err.message || `Predict Error ${response.status}`);
+  //     }
+  //     const data = await response.json();
+  //     return data.response?.[0]?.text || 'Sorry, unexpected response.';
+  //   } catch (error) {
+  //     console.error('Predict API Error:', error);
+  //     return error instanceof Error ? error.message : 'Sorry, request failed.';
+  //   }
+  // }, []);
+
+  // --- Animation Variants ---
   const fabMenuVariants = {
     hidden: { opacity: 0, y: 20, transition: { staggerChildren: 0.05, staggerDirection: -1 } },
     visible: { opacity: 1, y: 0, transition: { staggerChildren: 0.07, delayChildren: 0.1 } },
@@ -489,22 +713,8 @@ function FlowContent() {
     visible: { opacity: 1, y: 0, scale: 1 },
     exit: { opacity: 0, y: 10, scale: 0.9, transition: { duration: 0.1 } },
   };
-  const sidebarVariants = {
-    hidden: { x: '100%', opacity: 0 },
-    visible: { x: 0, opacity: 1, transition: { type: 'tween', duration: 0.3, ease: 'easeOut' } },
-    exit: { x: '100%', opacity: 0, transition: { type: 'tween', duration: 0.2, ease: 'easeIn' } },
-  };
 
-  // chatbot things.........................................................
-  const handleNewMessage = (message: string) => {
-    setMessages((prevMessages) => [...prevMessages, message]);
-  };
-  const onBotResponse = (response: string) => {
-    const botMessage = { role: 'assistant', content: response };
-    setMessages((prevMessages) => [...prevMessages, botMessage]);
-  };
-
-  // --- Render (unchanged) ---
+  // --- Render ---
   return (
     <div className="h-screen w-screen flex overflow-hidden bg-gray-50">
       <div className="flex-grow h-full relative">
@@ -521,34 +731,37 @@ function FlowContent() {
           fitView
           className="bg-gradient-to-br from-indigo-50 via-white to-blue-50"
           deleteKeyCode={['Backspace', 'Delete']}
-          nodesDraggable={true}
-          nodesConnectable={true}
-          elementsSelectable={true}
         >
           <Controls /> <Background />
         </ReactFlow>
+
+        {/* Top Right Buttons */}
         <div className="absolute top-4 right-6 z-10 flex gap-3">
+          {' '}
           {isLoading ? (
             <motion.button
-              className="flex items-center text-center gap-1 justify-center px-4 py-2 bg-blue-600/70 text-white rounded-md shadow-md  text-sm font-medium"
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              disabled
+              className="btn btn-sm btn-disabled gap-1"
+              initial={{ opacity: 0.5 }}
+              animate={{ opacity: [0.5, 1, 0.5] }}
+              transition={{ duration: 1.5, repeat: Infinity }}
             >
-              Building Bot... <Bot />
+              {' '}
+              Training... <Bot size={16} className="animate-spin" />{' '}
             </motion.button>
           ) : (
             <motion.button
               onClick={exportFlowData}
-              className="flex items-center text-center gap-1 justify-center px-4 py-2 bg-blue-600 text-white rounded-md shadow-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors duration-200 ease-in-out text-sm font-medium"
+              className="btn btn-sm btn-primary gap-1"
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
             >
-              Build Bot <Bot />
+              {' '}
+              Train Model <Bot size={16} />{' '}
             </motion.button>
-          )}
+          )}{' '}
         </div>
 
+        {/* Configure Button */}
         <AnimatePresence>
           {' '}
           {selectedNode && isConfigurableNode(selectedNode) && !isSidebarOpen && (
@@ -561,10 +774,8 @@ function FlowContent() {
             >
               {' '}
               <motion.button
-                onClick={() => {
-                  setIsSidebarOpen(true);
-                }}
-                className="flex items-center justify-center w-14 h-14 bg-gray-700 text-white rounded-full shadow-xl hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition-colors duration-200 ease-in-out"
+                onClick={() => setIsSidebarOpen(true)}
+                className="btn btn-circle btn-neutral shadow-xl"
                 title="Configure Node"
                 whileHover={{ scale: 1.1, rotate: 15 }}
                 whileTap={{ scale: 0.9 }}
@@ -575,6 +786,8 @@ function FlowContent() {
             </motion.div>
           )}{' '}
         </AnimatePresence>
+
+        {/* FAB */}
         <div ref={fabRef} className="absolute bottom-6 right-6 z-20">
           {' '}
           <AnimatePresence>
@@ -589,20 +802,19 @@ function FlowContent() {
               >
                 {' '}
                 {[
-                  { type: 'start', Icon: PlayCircle, color: 'purple', title: 'Add Start Node' },
-                  { type: 'intent', Icon: Bot, color: 'blue', title: 'Add Intent Node' },
-                  { type: 'action', Icon: Zap, color: 'green', title: 'Add Action Node' },
-                  { type: 'end', Icon: FlagOff, color: 'red', title: 'Add End Node' },
+                  { type: 'start', Icon: PlayCircle, color: 'purple', title: 'Add Start' },
+                  { type: 'intent', Icon: Bot, color: 'blue', title: 'Add Intent' },
+                  { type: 'action', Icon: Zap, color: 'green', title: 'Add Action' },
+                  { type: 'end', Icon: FlagOff, color: 'red', title: 'Add End' },
                 ].map((nodeInfo) => {
-                  const bgColor = colorClasses[nodeInfo.color]?.bg || colorClasses['gray'].bg;
-                  const hoverBgColor =
-                    colorClasses[nodeInfo.color]?.hoverBg || colorClasses['gray'].hoverBg;
+                  const bg = colorClasses[nodeInfo.color]?.bg || 'bg-gray-500';
+                  const hoverBg = colorClasses[nodeInfo.color]?.hoverBg || 'hover:bg-gray-600';
                   return (
                     <motion.button
                       key={nodeInfo.type}
                       variants={fabItemVariants}
                       onClick={() => handleAddNode(nodeInfo.type as any)}
-                      className={`flex items-center justify-center w-12 h-12 ${bgColor} text-white rounded-full shadow-lg ${hoverBgColor} transition-colors duration-200 ease-in-out transform hover:scale-110`}
+                      className={`btn btn-circle btn-sm ${bg} text-white shadow-lg ${hoverBg} transform hover:scale-110`}
                       title={nodeInfo.title}
                     >
                       {' '}
@@ -615,11 +827,11 @@ function FlowContent() {
           </AnimatePresence>{' '}
           <motion.button
             onClick={toggleFabMenu}
-            className="flex items-center justify-center w-14 h-14 bg-indigo-600 text-white rounded-full shadow-xl hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-all duration-200 ease-in-out"
+            className="btn btn-circle btn-primary shadow-xl"
             title={isFabMenuOpen ? 'Close Menu' : 'Add Node'}
             whileHover={{ scale: 1.1 }}
             whileTap={{ scale: 0.95 }}
-            animate={{ rotate: isFabMenuOpen ? 135 : 0 }}
+            animate={{ rotate: isFabMenuOpen ? 45 : 0 }}
             transition={{ type: 'spring', stiffness: 350, damping: 15 }}
           >
             {' '}
@@ -654,32 +866,26 @@ function FlowContent() {
           </Suspense>
         ) : null}
       </div>
-      <AnimatePresence>
-        {' '}
-        {isSidebarOpen && selectedNode && (
-          <motion.div
-            key={selectedNode ? 'sidebar-visible' : 'sidebar-hidden'}
-            variants={sidebarVariants}
-            initial="hidden"
-            animate="visible"
-            exit="exit"
-            className="w-72 h-full flex-shrink-0 bg-white shadow-lg border-l border-gray-200 flex flex-col"
-          >
-            {' '}
-            <Sidebar
-              selectedNode={selectedNode}
-              intents={intents}
-              definedActions={definedActions}
-              onUpdateStartNode={updateStartNode}
-              onUpdateIntent={updateIntentNode}
-              onUpdateAction={updateActionNode}
-              onAddNewIntentDefinition={handleAddNewIntentDefinition}
-              onAddNewActionDefinition={handleAddNewActionDefinition}
-              onClose={clearSelectionAndCloseSidebar}
-            />{' '}
-          </motion.div>
-        )}{' '}
-      </AnimatePresence>
+
+      {/* Sidebar (No Animation Wrapper) */}
+      {isSidebarOpen && selectedNode && isConfigurableNode(selectedNode) && (
+        <div
+          key={selectedNode.id}
+          className="w-80 h-full flex-shrink-0 bg-white shadow-lg border-l border-gray-200 flex flex-col"
+        >
+          <Sidebar
+            selectedNode={selectedNode}
+            intents={intents}
+            definedActions={definedActions}
+            onUpdateStartNode={updateStartNode}
+            onUpdateIntent={updateIntentNode}
+            onUpdateAction={updateActionNode}
+            onAddNewIntentDefinition={handleAddNewIntentDefinition}
+            onAddNewActionDefinition={handleAddNewActionDefinition}
+            onClose={clearSelectionAndCloseSidebar}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -687,9 +893,36 @@ function FlowContent() {
 function Flow() {
   return (
     <ReactFlowProvider>
-      <FlowContent />
+      {' '}
+      <FlowContent />{' '}
     </ReactFlowProvider>
   );
 }
 
 export default Flow;
+
+// Helper CSS classes used in Sidebar/Flow (can be in index.css or here)
+const css = `
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; padding: 0.5rem 1rem; border-radius: 0.375rem; border: 1px solid transparent; font-weight: 600; transition: background-color 0.2s; cursor: pointer; }
+.btn-sm { padding: 0.25rem 0.75rem; font-size: 0.875rem; }
+.btn-xs { padding: 0.1rem 0.5rem; font-size: 0.75rem; }
+.btn-circle { border-radius: 9999px; width: 3.5rem; height: 3.5rem; padding: 0; } /* Adjusted size for FAB */
+.btn-primary { background-color: #4f46e5; color: white; } .btn-primary:hover { background-color: #4338ca; } .btn-primary:disabled { background-color: #a5b4fc; cursor: not-allowed; }
+.btn-secondary { background-color: #e5e7eb; color: #374151; border-color: #d1d5db; } .btn-secondary:hover { background-color: #d1d5db; }
+.btn-neutral { background-color: #404040; color: white; } .btn-neutral:hover { background-color: #262626; }
+.btn-ghost { background-color: transparent; border: none; } .btn-ghost:hover { background-color: rgba(0,0,0,0.05); }
+.btn-disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-toggle { background-color: white; border: 1px solid #d1d5db; color: #4b5563; } .btn-toggle:hover { background-color: #f9fafb; }
+.btn-toggle.active { background-color: #eff6ff; border-color: #93c5fd; color: #2563eb; font-weight: 600; }
+
+.input, .textarea, .select { display: block; width: 100%; border-radius: 0.375rem; border: 1px solid #d1d5db; padding: 0.5rem 0.75rem; font-size: 0.875rem; line-height: 1.25rem; box-shadow: inset 0 1px 2px 0 rgb(0 0 0 / 0.05); }
+.input:focus, .textarea:focus, .select:focus { outline: 2px solid transparent; outline-offset: 2px; border-color: #60a5fa; box-shadow: 0 0 0 2px #bfdbfe; }
+.input-sm, .textarea-sm, .select-sm { padding-top: 0.25rem; padding-bottom: 0.25rem; font-size: 0.875rem; line-height: 1.25rem; }
+.textarea-xs { font-size: 0.75rem; line-height: 1rem; padding: 0.25rem 0.5rem; }
+.input-bordered, .textarea-bordered, .select-bordered { /* Add specific border styles if needed */ }
+`;
+// Inject styles (consider moving to index.css)
+const styleSheet = document.createElement('style');
+styleSheet.type = 'text/css';
+styleSheet.innerText = css;
+document.head.appendChild(styleSheet);
