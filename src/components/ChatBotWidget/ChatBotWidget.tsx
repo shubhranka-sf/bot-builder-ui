@@ -57,7 +57,7 @@ const ChatBotWidget = ({
 
     try {
       setTyping(true);
-
+      console.log("outgoingMessage", outgoingMessage);
       // Use the custom API call function
       const botResponse = await callApi(trimmedMessage);
       console.log('Bot Response:', botResponse); // Debugging
@@ -148,7 +148,8 @@ const ChatBotWidget = ({
                 }
                 {...(useInnerHTML
                   ? { dangerouslySetInnerHTML: { __html: msg.content } }
-                  : { children: msg.content })}
+                  :{ children: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content) }
+                )}
               />
             </li>
           ))}

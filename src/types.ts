@@ -1,3 +1,4 @@
+// ./src/types.ts
 // File: src/types.ts
 
 // Define shared types
@@ -38,8 +39,16 @@ export interface IntentNodeData {
   entities?: string[]; // Reflect entities of the linked definition
   label?: string; // Display label from definition
 }
+
 // ActionNodeData mirrors ActionDefinition but omits 'id' as it's part of the Node itself
 export interface ActionNodeData extends Omit<ActionDefinition, 'id'> {}
+
+// ADDED: FormNodeData definition
+export interface FormNodeData {
+    name: string; // Display name (e.g., "Collect User Info")
+    formId: string; // Unique ID for the form (e.g., "user_info_form")
+    slots: string[]; // Array of entity names required by the form
+}
 
 export interface EndNodeData {
   // Currently no specific data needed for EndNode
