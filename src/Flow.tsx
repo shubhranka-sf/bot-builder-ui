@@ -156,7 +156,6 @@ function FlowContent() {
         // console.log('API response:', data);
 
         const res = await data.json();
-        log
         return res.response[0].text;
       }
 
@@ -229,7 +228,7 @@ function FlowContent() {
                         />
                     </Suspense>
                 ) : (
-                     <div className="absolute bottom-6 left-6 p-3 bg-yellow-100 text-yellow-800 text-xs rounded-md shadow border border-yellow-300 z-10">
+                     <div className="absolute top-3 left-3 p-3 bg-yellow-100 text-yellow-800 text-xs rounded-md shadow border border-yellow-300 z-10">
                          Train the model to enable the chat widget.
                      </div>
                 )}

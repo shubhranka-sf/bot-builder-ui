@@ -172,7 +172,7 @@ export function useFlowExport({ intents, definedActions }: FlowExportProps) {
             } else if (node.type === "action" && node.data?.name) {
               steps.push({ node: "action", name: node.data.name });
             } else if (node.type === "form" && node.data?.name) {
-            steps.push({ node: "action", name: node.data.formId });
+            steps.push({ node: "action", name: node.data.formId, type:"form" });
             }
           }
     
@@ -217,7 +217,6 @@ export function useFlowExport({ intents, definedActions }: FlowExportProps) {
         const formattedForms: { name: string; formId: string, required_slots: string[] }[] = [];
         allNodes.forEach(node => {
             if (node.type === 'form' && node.data?.formId) {
-                console.log("Forms data", node.data);
                 const validSlots = Array.isArray(node.data.slots)
                     ? node.data.slots.filter((s: any): s is string => typeof s === 'string')
                     : [];
