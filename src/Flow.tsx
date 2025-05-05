@@ -37,6 +37,7 @@ import { NodesAtom, EdgesAtom } from './store/flowAtom'; // Import Atoms
 
 // Global State (Atoms are implicitly used via hooks)
 import 'react-toastify/dist/ReactToastify.css';
+import { toast } from 'react-toastify';
 
 // --- Main Flow Content Component ---
 function FlowContent() {
@@ -138,26 +139,33 @@ function FlowContent() {
      }, [nodes.length, fitView]); // Depend on node count
 
 
-     const callPredictApi =   async (message) => {
-        const data = await fetch(
-          `${import.meta.env.VITE_BACKEND_BASE_URL}/predict`,
-          {
+     const callPredictApi = async (message) => {
+        try {
+          const res = await fetch(`${import.meta.env.VITE_BACKEND_BASE_URL}/predict`, {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               text: message,
               sender_id: "user1",
               model_name: "default_model.tar.gz",
             }),
+          });
+      
+          if (!res.ok) {
+            throw new Error("Prediction API failed");
           }
-        );
-        // console.log('API response:', data);
-
-        const res = await data.json();
-        return res.response[0].text;
-      }
+      
+          const data = await res.json();
+          return data?.response?.[0]?.text || "No response";
+        } catch (error) {
+          console.error("Prediction API error:", error);
+          return "Sorry, something went wrong!";
+        }
+      };
+      const handleSelect = (value: string) => {
+        toast.success(`Selected: ${value}`);
+      };
+      
 
     // --- Render ---
     return (
@@ -218,6 +226,7 @@ function FlowContent() {
 
                 {/* Conditional Chat Widget */}
                 {isTrained ? (
+                    <>
                     <Suspense fallback={<div className='absolute bottom-5 left-5 text-gray-500'>Loading Chat...</div>}>
                         <ChatBotWidget
                             callApi={callPredictApi}
@@ -227,11 +236,15 @@ function FlowContent() {
                             primaryColor="#4F46E5"
                         />
                     </Suspense>
+
+                    </>
                 ) : (
                      <div className="absolute top-3 left-3 p-3 bg-yellow-100 text-yellow-800 text-xs rounded-md shadow border border-yellow-300 z-10">
                          Train the model to enable the chat widget.
                      </div>
                 )}
+
+
             </div>
 
             {/* Conditional Sidebar */}

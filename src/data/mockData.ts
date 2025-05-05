@@ -52,9 +52,8 @@ const baseMockIntents: Omit<IntentDefinition, 'entities'>[] = [
     label: 'Provide Info',
     examples: [
         'My account number is [123456789](account_number)',
-        'Use phone [9876543210](phone_number)',
         'My email is [test@example.com](email_address)', // Added email_address entity
-        'account [ACC1001](account_number) and phone [555-1212](phone_number)',
+        'account [ACC1001](account_number)',
         'it is [Bob](user_name) with email [bob@mail.com](email_address)' // Added example with name and email
     ]
   }
