@@ -54,5 +54,13 @@ export interface EndNodeData {
   // Currently no specific data needed for EndNode
 }
 
+export interface ChatbotVersion {
+  version: string;
+  timestamp: string;
+  exportJson: any;
+  nodes: any[];
+  edges: any[];
+}
+
 // Generic Node data type (useful if needed, though specific types are better)
 // export type FlowNodeData = StartNodeData | IntentNodeData | ActionNodeData | EndNodeData | {};
