@@ -118,6 +118,7 @@ function FlowContent() {
   }); // Manages node data manipulation -> updates atoms
 
   const { exportFlowData, isLoading, isTrained } = useFlowExport({
+    projectId: "Flow1",
     intents,
     definedActions,
   }); // Manages backend interactions
@@ -209,7 +210,7 @@ function FlowContent() {
 
   // --- Render ---
   return (
-    <div className="h-screen w-screen flex overflow-hidden bg-gray-50">
+    <div className="h-screen w-screen flex overflow-hidden bg-gray-50 select-none">
       <div className="flex-grow h-full relative">
         {/* *** Pass nodes and edges from Atoms to ReactFlow component *** */}
         <ReactFlow

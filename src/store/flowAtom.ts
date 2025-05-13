@@ -28,7 +28,7 @@ export const NodesAtom = atom<Node[]>(initialNodes);
 export const EdgesAtom = atom<Edge[]>(initialEdges);
 // export const BotVersion = atom(initialVersions);
 export const isLoadingAtom = atom<boolean>(false);
-export const isBotTrainedAtom = atom<boolean>(true); // Keep track of training status
+export const isBotTrainedAtom = atom<boolean>(false); // Keep track of training status
 
 // Optional: selected node/edge atom - Consider if needed globally
 // export const selectedNodeAtom = atom<Node | null>(null);

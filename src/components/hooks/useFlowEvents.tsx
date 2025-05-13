@@ -62,7 +62,6 @@ export function useFlowEvents() {
         try {
             const serializableNodes = nodesToSave.map(n => ({ ...n, data: { ...n.data } }));
             localStorage.setItem('nodes', JSON.stringify(serializableNodes));
-            console.log('Saved nodes:', serializableNodes.length);
         } catch (e) {
             console.error('LS Node Save Error:', e);
             toast.error("Could not save nodes to local storage.");
@@ -80,7 +79,6 @@ export function useFlowEvents() {
         try {
             const serializableEdges = edgesToSave.map(e => ({ ...e, data: e.data ? { ...e.data } : undefined }));
             localStorage.setItem('edges', JSON.stringify(serializableEdges));
-            console.log('Saved edges:', serializableEdges.length);
         } catch (e) {
             console.error('LS Edge Save Error:', e);
             toast.error("Could not save edges to local storage.");
@@ -99,7 +97,6 @@ export function useFlowEvents() {
         const storedEdges = localStorage.getItem('edges');
 
         if (storedNodes && storedNodes !== '[]') {
-            console.log('Loading nodes from localStorage');
             try {
                 setNodes(JSON.parse(storedNodes));
             } catch (e) {
@@ -113,7 +110,6 @@ export function useFlowEvents() {
         }
 
         if (storedEdges && storedEdges !== '[]') {
-            console.log('Loading edges from localStorage');
              try {
                 setEdges(JSON.parse(storedEdges));
              } catch (e) {

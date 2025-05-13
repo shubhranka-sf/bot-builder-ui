@@ -2,10 +2,11 @@ import { useCallback } from "react";
 import { useAtom, useSetAtom } from "jotai";
 import { useReactFlow } from "reactflow";
 import { toast } from "react-toastify";
-import { isLoadingAtom, isBotTrainedAtom } from "../../store/flowAtom";
+import { isLoadingAtom, isBotTrainedAtom, AddBotVersionAtom } from "../../store/flowAtom";
 import { IntentDefinition, ActionDefinition } from "../../types";
-import { AddBotVersionAtom } from "../../store/flowAtom";
+
 interface FlowExportProps {
+  projectId: string;
   intents: IntentDefinition[];
   definedActions: ActionDefinition[];
 }
@@ -20,27 +21,18 @@ async function computeHash(obj: any): Promise<string> {
     .join("");
 }
 
-// Normalize nodes (remove position, width, etc.)
 const normalizeNodes = (nodes: any[]) =>
   nodes.map(({ id, type, data }) => ({ id, type, data }));
 
-// Normalize edges (remove style, position info)
 const normalizeEdges = (edges: any[]) =>
   edges.map(({ id, source, target, label }) => ({ id, source, target, label }));
 
-// Utility to manage versioning
-const getNextStoryVersion = (storyName: string): string => {
-  const key = `chatbot_version__${storyName}`;
-  const current = localStorage.getItem(key);
-  const nextVersion = current ? parseInt(current) + 1 : 1;
-  return `${storyName}__${nextVersion}`;
+const saveStoryVersion = (key: string, version: number) => {
+  console.log("KEY", key);
+  localStorage.setItem(key, version.toString());
 };
 
-const saveStoryVersion = (storyName: string, version: number) => {
-  localStorage.setItem(`chatbot_version__${storyName}`, version.toString());
-};
-
-export function useFlowExport({ intents, definedActions }: FlowExportProps) {
+export function useFlowExport({ projectId, intents, definedActions }: FlowExportProps) {
   const addBotVersion = useSetAtom(AddBotVersionAtom);
   const [isLoading, setLoading] = useAtom(isLoadingAtom);
   const [isTrained, setIsTrained] = useAtom(isBotTrainedAtom);
@@ -98,70 +90,67 @@ export function useFlowExport({ intents, definedActions }: FlowExportProps) {
     });
 
     const startNodes = allNodes.filter((node) => node.type === "start");
-    if (!startNodes.length) {
-      toast.warn("No Start Nodes found.");
-      setLoading(false);
-      return;
-    }
-
-    const stories = [];
-
-    startNodes.forEach((startNode) => {
-      const storyName =
-        startNode.data?.storyId || `Generated_Story_${startNode.id}`;
-      const visited = new Set<string>();
-      const path: string[] = [];
-      const onStack = new Set<string>();
-      let hasCycle = false;
-
-      function dfs(nodeId: string) {
-        if (hasCycle || nodeMap[nodeId].type === "end") return;
-        visited.add(nodeId);
-        onStack.add(nodeId);
-
-        for (const edge of outgoingEdges[nodeId] || []) {
-          const nextId = edge.target;
-          if (!visited.has(nextId)) {
-            dfs(nextId);
-          } else if (onStack.has(nextId)) {
-            hasCycle = true;
-            toast.warn(`Loop in story '${storyName}'.`);
-            return;
-          }
+    const stories: ExportedStory[] = [];
+    
+    const traversePaths = (
+      nodeId: string,
+      path: string[] = [],
+      visited = new Set<string>()
+    ): string[][] => {
+      if (visited.has(nodeId)) {
+        toast.warn(`Loop detected at node ${nodeId}`);
+        return [];
+      }
+    
+      const newVisited = new Set(visited);
+      newVisited.add(nodeId);
+      const currentPath = [...path, nodeId];
+    
+      const nextEdges = outgoingEdges[nodeId] || [];
+      if (nextEdges.length === 0 || nodeMap[nodeId]?.type === "end") {
+        return [currentPath];
+      }
+    
+      let allPaths: string[][] = [];
+      for (const edge of nextEdges) {
+        const subPaths = traversePaths(edge.target, currentPath, newVisited);
+        allPaths.push(...subPaths);
+      }
+    
+      return allPaths;
+    };
+    
+    for (const startNode of startNodes) {
+      const paths = traversePaths(startNode.id);
+    
+      for (const path of paths) {
+        const steps = path
+          .filter(
+            (id) => nodeMap[id]?.type !== "start" && nodeMap[id]?.type !== "end"
+          )
+          .map((id) => {
+            const node = nodeMap[id];
+            if (node.type === "intent" && node.data?.intentId) {
+              return { node: "intent", name: node.data.intentId };
+            } else if (node.type === "form" && node.data?.formId) {
+              return { node: "action", name: node.data.formId, type: "form" };
+            } else if (node.type === "action" && node.data?.name) {
+              return { node: "action", name: node.data.name };
+            }
+            return null;
+          })
+          .filter(Boolean);
+    
+        if (steps.length) {
+          stories.push({
+            name: `${startNode.data?.name || "story"}_${Math.random()
+              .toString(36)
+              .substring(2, 7)}`,
+            steps,
+          });
         }
-
-        onStack.delete(nodeId);
-        path.unshift(nodeId);
       }
-
-      dfs(startNode.id);
-      if (hasCycle) return;
-
-      const steps = path
-        .filter(
-          (id) => nodeMap[id]?.type !== "start" && nodeMap[id]?.type !== "end"
-        )
-        .map((id) => {
-          const node = nodeMap[id];
-          if (node.type === "intent" && node.data?.intentId) {
-            return { node: "intent", name: node.data.intentId };
-          }
-          if (node.type === "action" && node.data?.name) {
-            return { node: "action", name: node.data.name };
-          }
-          if (node.type === "form" && node.data?.formId) {
-            return { node: "action", name: node.data.formId, type: "form" };
-          }
-          return null;
-        })
-        .filter(Boolean);
-
-      if (steps.length) {
-        stories.push({ name: storyName, steps });
-      } else {
-        console.warn(`Story '${storyName}' has no steps.`);
-      }
-    });
+    }
 
     const formattedEntities = Array.from(entitiesSet).map((name) => ({ name }));
     const slots = formattedEntities.map((entity) => ({
@@ -173,15 +162,12 @@ export function useFlowExport({ intents, definedActions }: FlowExportProps) {
     }));
 
     const formattedForms: { name: string; required_slots: string[] }[] = [];
-    const form_rules: { name: string; form: string; next_action: string }[] =
-      [];
+    const form_rules: { name: string; form: string; next_action: string }[] = [];
 
     allNodes.forEach((node) => {
       if (node.type === "form" && node.data?.formId) {
         const validSlots = Array.isArray(node.data.slots)
-          ? node.data.slots.filter(
-              (s: any): s is string => typeof s === "string"
-            )
+          ? node.data.slots.filter((s: any): s is string => typeof s === "string")
           : [];
 
         if (validSlots.length > 0) {
@@ -192,7 +178,6 @@ export function useFlowExport({ intents, definedActions }: FlowExportProps) {
           validSlots.forEach((slot) => entitiesSet.add(slot));
         }
 
-        // --- Rule extraction ---
         const formId = node.id;
         const formName = node.data.formId;
 
@@ -210,28 +195,6 @@ export function useFlowExport({ intents, definedActions }: FlowExportProps) {
       }
     });
 
-    const primaryStoryName = stories[0]?.name || "story";
-    const versionCountKey = `chatbot_version__${primaryStoryName}`;
-    const currentVersion = parseInt(
-      localStorage.getItem(versionCountKey) || "0"
-    );
-    const nextVersion = currentVersion + 1;
-    const chatbotVersion = `${primaryStoryName}__${nextVersion}`;
-
-    const exportData = {
-      metadata: [{ chatbotVersion }],
-      intents: formattedIntents,
-      forms: formattedForms,
-      actions: formattedActions,
-      stories,
-      entities: formattedEntities,
-      slots,
-      form_rules, // <-- newly added rules array
-    };
-
-    console.log(JSON.stringify(exportData, null, 2));
-
-    // Hash comparison
     const normalized = {
       nodes: normalizeNodes(allNodes),
       edges: normalizeEdges(allEdges),
@@ -243,14 +206,30 @@ export function useFlowExport({ intents, definedActions }: FlowExportProps) {
       slots,
     };
 
-    const hashKey = `chatbot_hash__${primaryStoryName}`;
-    const previousHash = localStorage.getItem(hashKey);
     const currentHash = await computeHash(normalized);
+    const versionCountKey = `chatbot_version__${projectId}`;
+    const hashKey = `chatbot_hash__${projectId}`;
+    const previousHash = localStorage.getItem(hashKey);
+    const currentVersion = parseInt(localStorage.getItem(versionCountKey) || "0") + 1;
+    const chatbotVersion = `${projectId}__${currentVersion}`;
+
+    const exportData = {
+      metadata: [{ chatbotVersion }],
+      intents: formattedIntents,
+      forms: formattedForms,
+      actions: formattedActions,
+      stories,
+      entities: formattedEntities,
+      slots,
+      form_rules,
+    };
+    console.log(JSON.stringify(exportData, null, 2));
+    console.log("Previous hash", previousHash);
+    console.log("current hash", currentHash);
+    
 
     if (previousHash === currentHash) {
-      toast.info("No changes detected — skipping training.", {
-        autoClose: 2000,
-      });
+      toast.info("No changes detected — skipping training.", { autoClose: 2000 });
       setLoading(false);
       return;
     }
@@ -268,7 +247,7 @@ export function useFlowExport({ intents, definedActions }: FlowExportProps) {
           }
           const result = await res.json();
           setIsTrained(true);
-          saveStoryVersion(primaryStoryName, nextVersion);
+          saveStoryVersion(versionCountKey, currentVersion);
           localStorage.setItem(hashKey, currentHash);
           addBotVersion({
             version: chatbotVersion,
@@ -277,8 +256,6 @@ export function useFlowExport({ intents, definedActions }: FlowExportProps) {
             nodes: allNodes,
             edges: allEdges,
           });
-          console.log(addBotVersion);
-          
           return result;
         }),
         {
@@ -298,7 +275,7 @@ export function useFlowExport({ intents, definedActions }: FlowExportProps) {
     } finally {
       setLoading(false);
     }
-  }, [intents, definedActions, getNodes, getEdges, setIsTrained, setLoading]);
+  }, [projectId, intents, definedActions, getNodes, getEdges, setIsTrained, setLoading]);
 
   return {
     exportFlowData,

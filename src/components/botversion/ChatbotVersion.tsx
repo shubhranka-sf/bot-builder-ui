@@ -19,7 +19,6 @@ const DropdownButton: React.FC<DropdownButtonProps> = ({
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
@@ -34,11 +33,11 @@ const DropdownButton: React.FC<DropdownButtonProps> = ({
     <div className="relative inline-block text-left" ref={dropdownRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="inline-flex justify-center w-full rounded-md border border-gray-300 shadow-sm px-1 py-1 bg-indigo-600 text-sm font-medium text-white"
+        className="inline-flex items-center justify-between w-full rounded-lg border border-gray-300 bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
       >
         {buttonLabel}
         <svg
-          className="-mr-1 ml-2 h-5 w-5"
+          className="ml-2 h-5 w-5"
           xmlns="http://www.w3.org/2000/svg"
           viewBox="0 0 20 20"
           fill="currentColor"
@@ -53,8 +52,8 @@ const DropdownButton: React.FC<DropdownButtonProps> = ({
       </button>
 
       {isOpen && (
-        <div className="absolute z-10 mt-2 w-full rounded-md shadow-lg ring-1 ring-black ring-opacity-5">
-          <div>
+        <div className="absolute z-20 mt-2 w-full rounded-md bg-white shadow-lg ring-1 ring-black ring-opacity-10">
+          <div className="py-1">
             {options.map((option) => (
               <button
                 key={option.value}
@@ -62,7 +61,7 @@ const DropdownButton: React.FC<DropdownButtonProps> = ({
                   onSelect(option.value);
                   setIsOpen(false);
                 }}
-                className="w-full text-sm bg-blue-400 text-gray-700 hover:bg-gray-100"
+                className="w-full text-left px-4 py-2 text-sm text-gray-800 hover:bg-indigo-100 hover:text-indigo-700 transition"
               >
                 {option.label}
               </button>
