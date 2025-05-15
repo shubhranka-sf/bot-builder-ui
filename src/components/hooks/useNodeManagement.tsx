@@ -8,20 +8,104 @@ import {
   IntentNodeData,
   ActionNodeData,
   FormNodeData,
+  ScriptNodeData,
+  IfNodeData, // --- IMPORT IfNodeData ---
   IntentDefinition,
   ActionDefinition,
 } from "../../types";
 import { parseEntitiesFromExamples } from "../../utils/entityParser";
 import { getId } from "../../data/mockData";
-import { slugify } from "../../utils/slugify";
+// import { slugify } from "../../utils/slugify"; // Keep if used
 
-interface NodeManagementProps {
-  intents: IntentDefinition[];
-  setIntents: React.Dispatch<React.SetStateAction<IntentDefinition[]>>;
-  definedActions: ActionDefinition[];
-  setDefinedActions: React.Dispatch<React.SetStateAction<ActionDefinition[]>>;
-  setSelectedNode: React.Dispatch<React.SetStateAction<Node | null>>;
-}
+const generateRandomSuffix = () => Math.random().toString(36).substring(2, 7).toUpperCase();
+
+const createRasaActionTemplate = (baseName: string): string => {
+  const randomSuffix = generateRandomSuffix();
+  const className = `Action${baseName.replace(/[^a-zA-Z0-9_]/g, '')}${randomSuffix}`;
+  const actionName = `action_${baseName.toLowerCase().replace(/\s+/g, '_')}_${randomSuffix.toLowerCase()}`;
+
+  return `from typing import Any, Text, Dict, List
+from rasa_sdk import Action, Tracker
+from rasa_sdk.executor import CollectingDispatcher
+# from rasa_sdk.events import SlotSet
+# import logging
+
+# logger = logging.getLogger(__name__)
+
+class ${className}(Action):
+    def name(self) -> Text:
+        return "${actionName}"
+
+    def run(self, dispatcher: CollectingDispatcher,
+            tracker: Tracker,
+            domain: Dict[Text, Any]) -> List[Dict[Text, Any]]:
+        
+        # Your custom Python code goes here
+        dispatcher.utter_message(text="Hello from the ${actionName} action!")
+        return []
+`;
+};
+
+// --- ADDED: Helper function to create Rasa If Condition Action Template ---
+const createRasaIfConditionActionTemplate = (baseName: string, condition: string): string => {
+    const randomSuffix = generateRandomSuffix();
+    const className = `ActionIf${baseName.replace(/[^a-zA-Z0-9_]/g, '')}${randomSuffix}`;
+    const actionName = `action_if_${baseName.toLowerCase().replace(/\s+/g, '_')}_${randomSuffix.toLowerCase()}`;
+    const trueSlot = `if_cond_${randomSuffix.toLowerCase()}_true`;
+    const falseSlot = `if_cond_${randomSuffix.toLowerCase()}_false`;
+
+    // Basic sanitization for the condition to prevent trivial script injection if used insecurely elsewhere.
+    // For Rasa, this condition is Python code executed server-side.
+    const sanitizedCondition = condition.replace(/;/g, ''); // Remove semicolons as a basic measure
+
+    return `from typing import Any, Text, Dict, List
+from rasa_sdk import Action, Tracker
+from rasa_sdk.executor import CollectingDispatcher
+from rasa_sdk.events import SlotSet
+# import logging
+
+# logger = logging.getLogger(__name__)
+
+class ${className}(Action):
+    def name(self) -> Text:
+        return "${actionName}"
+
+    def run(self, dispatcher: CollectingDispatcher,
+            tracker: Tracker,
+            domain: Dict[Text, Any]) -> List[Dict[Text, Any]]:
+        
+        condition_to_evaluate = """${sanitizedCondition}"""
+        evaluation_result = False
+        slots_to_set = []
+
+        # IMPORTANT: The 'tracker' object is available in the eval context.
+        # You can use tracker.get_slot("slot_name"), tracker.latest_message, etc.
+        # Be cautious with eval if the condition string can be manipulated by users.
+        try:
+            # logger.debug(f"Evaluating condition: {condition_to_evaluate}")
+            evaluation_result = eval(condition_to_evaluate, {"tracker": tracker}, {})
+            # logger.debug(f"Condition evaluated to: {evaluation_result}")
+        except Exception as e:
+            # logger.error(f"Error evaluating condition '{condition_to_evaluate}': {e}")
+            dispatcher.utter_message(text=f"Error evaluating condition in action ${actionName}.")
+            # Default to false path or handle error appropriately
+            slots_to_set.append(SlotSet("${falseSlot}", True))
+            slots_to_set.append(SlotSet("${trueSlot}", False)) # Ensure only one is true
+            return slots_to_set
+
+        if evaluation_result:
+            # dispatcher.utter_message(text="Condition was TRUE.") # Optional debug message
+            slots_to_set.append(SlotSet("${trueSlot}", True))
+            slots_to_set.append(SlotSet("${falseSlot}", False))
+        else:
+            # dispatcher.utter_message(text="Condition was FALSE.") # Optional debug message
+            slots_to_set.append(SlotSet("${falseSlot}", True))
+            slots_to_set.append(SlotSet("${trueSlot}", False))
+            
+        return slots_to_set
+`;
+};
+
 
 export function useNodeManagement({
   intents,
@@ -33,9 +117,8 @@ export function useNodeManagement({
   const [, setNodes] = useAtom(NodesAtom);
   const { addNodes, screenToFlowPosition, getNode, getNodes } = useReactFlow();
 
-  // --- Generic Node Update ---
   const updateNode = useCallback(
-    <T extends StartNodeData | IntentNodeData | ActionNodeData | FormNodeData>(
+    <T extends StartNodeData | IntentNodeData | ActionNodeData | FormNodeData | ScriptNodeData | IfNodeData>( // Added IfNodeData
       nodeId: string,
       nodeType: string,
       updateData: Partial<T>
@@ -44,7 +127,18 @@ export function useNodeManagement({
       setNodes((nds) =>
         nds.map((node) => {
           if (node.id === nodeId && node.type === nodeType) {
-            updatedNode = { ...node, data: { ...node.data, ...updateData } };
+            // If updating condition for 'if' node, regenerate scriptContent
+            if (nodeType === 'if' && 'condition' in updateData && typeof updateData.condition === 'string') {
+                const currentData = node.data as IfNodeData;
+                const baseName = currentData.name || "Condition";
+                const newScriptContent = createRasaIfConditionActionTemplate(baseName, updateData.condition);
+                updatedNode = {
+                    ...node,
+                    data: { ...currentData, ...updateData, scriptContent: newScriptContent }
+                };
+            } else {
+                 updatedNode = { ...node, data: { ...node.data, ...updateData } };
+            }
             return updatedNode;
           }
           return node;
@@ -61,8 +155,7 @@ export function useNodeManagement({
     [setNodes, setSelectedNode]
   );
 
-  // --- Specific Node Update Callbacks ---
-  const updateStartNode = useCallback(
+  const updateStartNode = useCallback( /* ... (no change) ... */
     (nodeId: string, newStoryName: string, newStoryId?: string) => {
       const updateData: Partial<StartNodeData> = {
         storyName: newStoryName,
@@ -74,7 +167,7 @@ export function useNodeManagement({
     [updateNode]
   );
 
-  const updateIntentNode = useCallback(
+  const updateIntentNode = useCallback( /* ... (no change) ... */
     (nodeId: string, newIntentId: string, newExamples?: string[]) => {
       const intentDefinition = intents.find((i) => i.id === newIntentId);
       const finalExamples = newExamples ?? intentDefinition?.examples ?? [];
@@ -99,10 +192,6 @@ export function useNodeManagement({
               examples: finalExamples,
               entities: parsedEntities,
             };
-            console.log(
-              "Updated intent definition:",
-              updatedIntents[intentIndex]
-            );
             return updatedIntents;
           } else {
             console.warn(
@@ -116,7 +205,7 @@ export function useNodeManagement({
     [updateNode, intents, setIntents]
   );
 
-  const updateActionNode = useCallback(
+  const updateActionNode = useCallback( /* ... (no change) ... */
     (nodeId: string, actionData: Partial<ActionNodeData>) => {
         const nodeToUpdate = getNode(nodeId);
         if (!nodeToUpdate || nodeToUpdate.type !== 'action') {
@@ -126,16 +215,15 @@ export function useNodeManagement({
 
         const isChangingWhichAction =
             actionData.name &&
-            Object.keys(actionData).length === 1 && // Only 'name' is provided
+            Object.keys(actionData).length === 1 &&
             actionData.name !== nodeToUpdate.data?.name;
 
         let finalActionData: ActionNodeData;
 
         if (isChangingWhichAction && actionData.name) {
-            // Changing the linked definition
             const newActionDefinition = definedActions.find((a) => a.name === actionData.name);
             if (newActionDefinition) {
-                finalActionData = { ...newActionDefinition }; // Use a copy of the definition
+                finalActionData = { ...newActionDefinition };
             } else {
                 console.warn(`Selected action definition "${actionData.name}" not found.`);
                 toast.warn(`Definition for "${actionData.name}" not found. Creating basic.`);
@@ -147,7 +235,6 @@ export function useNodeManagement({
                 };
             }
         } else {
-            // Editing the properties of the current action (potentially updating definition too)
             const baseData = nodeToUpdate.data || {};
             const determinedType = actionData.valueType || baseData.valueType || 'text';
             const mergedVariations = determinedType === 'text'
@@ -164,19 +251,17 @@ export function useNodeManagement({
                 variations: mergedVariations,
             };
 
-             // If editing (not just changing definition), update the global definition too
              if (finalActionData.name) {
                  setDefinedActions((prevActions) => {
                      const index = prevActions.findIndex((a) => a.name === finalActionData.name);
                      const definitionToUpdate: ActionDefinition = {
-                         ...finalActionData, // Use the merged/final data
-                         id: index > -1 ? prevActions[index].id : `action_${Date.now()}`, // Preserve or create ID
+                         ...finalActionData,
+                         id: index > -1 ? prevActions[index].id : `action_${Date.now()}`,
                      };
 
                      if (index > -1) {
                          const updated = [...prevActions];
                          updated[index] = definitionToUpdate;
-                         console.log('Updated action definition:', definitionToUpdate);
                          return updated;
                      } else {
                          console.warn(`Action definition "${finalActionData.name}" not found during edit. Adding as new.`);
@@ -186,21 +271,47 @@ export function useNodeManagement({
                  });
              }
         }
-         updateNode<ActionNodeData>(nodeId, 'action', finalActionData); // Update the node itself
+         updateNode<ActionNodeData>(nodeId, 'action', finalActionData);
 
     },
     [getNode, definedActions, setDefinedActions, updateNode]
-);
+  );
 
-  const updateFormNode = useCallback(
+  const updateFormNode = useCallback( /* ... (no change) ... */
     (nodeId: string, formData: Partial<FormNodeData>) => {
       updateNode<FormNodeData>(nodeId, "form", formData);
     },
     [updateNode]
   );
 
-  // --- Add Node ---
-  const getCenterPosition = useCallback((): XYPosition => {
+  const updateScriptNode = useCallback( /* ... (no change) ... */
+    (nodeId: string, scriptData: Partial<ScriptNodeData>) => {
+      updateNode<ScriptNodeData>(nodeId, "script", scriptData);
+    },
+    [updateNode]
+  );
+
+  // --- ADDED: updateIfNode ---
+  const updateIfNode = useCallback(
+    (nodeId: string, ifData: Partial<IfNodeData>) => {
+      // If the condition changes, the scriptContent also needs to be regenerated
+      if (ifData.condition !== undefined) {
+          const node = getNode(nodeId);
+          if (node && node.type === 'if') {
+              const currentData = node.data as IfNodeData;
+              const baseName = ifData.name || currentData.name || "Condition";
+              const newScriptContent = createRasaIfConditionActionTemplate(baseName, ifData.condition);
+              updateNode<IfNodeData>(nodeId, "if", { ...ifData, scriptContent: newScriptContent });
+              return;
+          }
+      }
+      updateNode<IfNodeData>(nodeId, "if", ifData);
+    },
+    [updateNode, getNode]
+  );
+
+
+  const getCenterPosition = useCallback((): XYPosition => { /* ... (no change) ... */
     const flowPane = document.querySelector(".react-flow__pane");
     if (flowPane) {
       const bounds = flowPane.getBoundingClientRect();
@@ -219,17 +330,18 @@ export function useNodeManagement({
   }, [screenToFlowPosition, getNodes]);
 
   const handleAddNode = useCallback(
-    (type: "intent" | "action" | "end" | "start" | "form") => {
+    (type: "intent" | "action" | "end" | "start" | "form" | "script" | "if") => { // --- Added "if" ---
       const position = getCenterPosition();
       let newNodeData: any = {};
+      const baseNodeId = getId();
 
-      if (type === "start") {
+      if (type === "start") { /* ... (no change) ... */
         newNodeData = {
           storyName: `New Story`,
-          storyId: `story_${getId().slice(-4)}`,
+          storyId: `story_${baseNodeId.slice(-6)}`,
           label: `New Story`,
         };
-      } else if (type === "intent") {
+      } else if (type === "intent") { /* ... (no change) ... */
         const defaultIntent = intents[0] || {
           id: "intent_new",
           label: "New Intent",
@@ -242,49 +354,53 @@ export function useNodeManagement({
           entities: [...(defaultIntent.entities || [])],
           label: defaultIntent.label,
         };
-      } else if (type === "action") {
+      } else if (type === "action") { /* ... (no change) ... */
         const defaultAction = definedActions[0] || {
           title: "New Action",
-          name: `action_new_${getId().slice(-4)}`,
+          name: `action_new_${baseNodeId.slice(-6)}`,
           valueType: "text",
           variations: ["Configure me..."],
         };
-
-        const baseTitle = defaultAction.title || "new-action";
-        let baseSlug = slugify(baseTitle);
-        let idSlug = `utter_${baseSlug}`;
-
         newNodeData = {
           title: defaultAction.title,
-          name: idSlug,
+          name: defaultAction.name,
           valueType: defaultAction.valueType,
-          value:
-            defaultAction.valueType === "function"
-              ? defaultAction.value
-              : defaultAction.variations?.[0],
-          variations:
-            defaultAction.valueType === "text"
-              ? [...(defaultAction.variations || [""])]
-              : undefined,
+          value: defaultAction.valueType === "function" ? defaultAction.value : defaultAction.variations?.[0],
+          variations: defaultAction.valueType === "text" ? [...(defaultAction.variations || [""])] : undefined,
         };
-      } else if (type === "form") {
+      } else if (type === "form") { /* ... (no change) ... */
         newNodeData = {
           name: "New Form",
-          formId: `form_${getId().slice(-4)}`,
+          formId: `form_${baseNodeId.slice(-6)}`,
           slots: [],
         };
-      } else if (type === "end") {
+      } else if (type === "script") { /* ... (no change) ... */
+        const scriptBaseName = "MyCustomScript";
+        newNodeData = {
+            name: `Custom Script ${generateRandomSuffix()}`,
+            description: 'A Rasa custom action script.',
+            scriptContent: createRasaActionTemplate(scriptBaseName)
+        };
+      } else if (type === "if") { // --- ADDED IF NODE DATA ---
+        const ifBaseName = "ConditionCheck";
+        const defaultCondition = 'tracker.get_slot("some_slot") == "expected_value"';
+        newNodeData = {
+            name: `If Condition ${generateRandomSuffix()}`,
+            description: 'Evaluates a Python condition to branch the flow.',
+            condition: defaultCondition,
+            scriptContent: createRasaIfConditionActionTemplate(ifBaseName, defaultCondition)
+        };
+      } else if (type === "end") { /* ... (no change) ... */
         newNodeData = {};
       }
 
-      const newNode: Node = { id: getId(), type, position, data: newNodeData };
+      const newNode: Node = { id: baseNodeId, type, position, data: newNodeData };
       addNodes(newNode);
     },
     [addNodes, getCenterPosition, definedActions, intents]
   );
 
-  // --- Add Definitions ---
-  const handleAddNewIntentDefinition = useCallback(
+  const handleAddNewIntentDefinition = useCallback( /* ... (no change) ... */
     (newIntent: IntentDefinition) => {
       setIntents((prev) => {
         if (prev.some((i) => i.id === newIntent.id)) {
@@ -298,7 +414,7 @@ export function useNodeManagement({
     [setIntents]
   );
 
-  const handleAddNewActionDefinition = useCallback(
+  const handleAddNewActionDefinition = useCallback( /* ... (no change) ... */
     (newAction: ActionDefinition) => {
       setDefinedActions((prev) => {
         if (prev.some((a) => a.name === newAction.name)) {
@@ -320,7 +436,12 @@ export function useNodeManagement({
                 : [""]
               : undefined,
         };
-        if (completeAction.valueType === "text") delete completeAction.value;
+        if (completeAction.valueType === "text" && completeAction.variations && completeAction.variations.length > 0) {
+            completeAction.value = completeAction.variations[0];
+        } else if (completeAction.valueType === 'text') {
+            delete completeAction.value;
+        }
+
         if (completeAction.valueType === "function")
           delete completeAction.variations;
 
@@ -336,6 +457,8 @@ export function useNodeManagement({
     updateIntentNode,
     updateActionNode,
     updateFormNode,
+    updateScriptNode,
+    updateIfNode, // --- EXPORT updateIfNode ---
     handleAddNode,
     handleAddNewIntentDefinition,
     handleAddNewActionDefinition,

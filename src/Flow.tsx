@@ -2,14 +2,14 @@ import React, { useState, useMemo, Suspense, useEffect } from "react";
 import ReactFlow, {
   Controls,
   Background,
-  NodeTypes, // Removed Node, Edge imports as we get them from atom
-  useReactFlow, // Keep this if needed for other functionalities like fitView
+  NodeTypes,
+  useReactFlow,
   ReactFlowProvider,
 } from "reactflow";
 import "reactflow/dist/style.css";
 import { Settings } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { useAtom, useAtomValue, useSetAtom } from "jotai"; // Import useAtom
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 
 // Node Components
 import StartNode from "./components/nodes/StartNode";
@@ -17,6 +17,8 @@ import IntentNode from "./components/nodes/IntentNode";
 import ActionNode from "./components/nodes/ActionNode";
 import EndNode from "./components/nodes/EndNode";
 import FormNode from "./components/nodes/FormNode";
+import ScriptNode from "./components/nodes/ScriptNode";
+import IfNode from "./components/nodes/IfNode"; // --- IMPORT IF NODE ---
 
 // UI Components
 import Sidebar from "./components/Sidebar";
@@ -35,21 +37,25 @@ import {
   defaultEdgeOptions,
   mockDefinedActions,
   mockIntents,
+  mockScriptUtilityFunctions,
 } from "./data/mockData";
-import { ActionDefinition, IntentDefinition } from "./types";
+import { ActionDefinition, IntentDefinition, ScriptUtilityFunction, IfNodeData } from "./types"; // Added IfNodeData
 import {
   NodesAtom,
   EdgesAtom,
   BotVersionsAtom,
   setSelectedBotVersionAtom,
-} from "./store/flowAtom"; // Import Atoms
+} from "./store/flowAtom";
 
-// Global State (Atoms are implicitly used via hooks)
+// Global State
 import "react-toastify/dist/ReactToastify.css";
 import DropdownButton from "./components/botversion/ChatbotVersion";
 import { toast } from "react-toastify";
 
-// --- Main Flow Content Component ---
+import { DndProvider } from 'react-dnd';
+import { HTML5Backend } from 'react-dnd-html5-backend';
+
+
 function FlowContent() {
   const versions = useAtomValue(BotVersionsAtom);
   const setSelectedVersion = useSetAtom(setSelectedBotVersionAtom);
@@ -58,12 +64,11 @@ function FlowContent() {
     value: v.version,
   }));
 
-  // Global Definitions State
   const [definedActions, setDefinedActions] = useState<ActionDefinition[]>(
     () => {
       const stored = localStorage.getItem("definedActions");
       try {
-        return stored ? JSON.parse(stored) : mockDefinedActions; // Use mock as fallback
+        return stored ? JSON.parse(stored) : mockDefinedActions;
       } catch {
         return mockDefinedActions;
       }
@@ -72,19 +77,16 @@ function FlowContent() {
   const [intents, setIntents] = useState<IntentDefinition[]>(() => {
     const stored = localStorage.getItem("intents");
     try {
-      return stored ? JSON.parse(stored) : mockIntents; // Use mock as fallback
+      return stored ? JSON.parse(stored) : mockIntents;
     } catch {
       return mockIntents;
     }
   });
+  const [scriptUtilities] = useState<ScriptUtilityFunction[]>(mockScriptUtilityFunctions);
 
-  // *** Read nodes and edges state from Jotai Atoms ***
+
   const [nodes] = useAtom(NodesAtom);
   const [edges] = useAtom(EdgesAtom);
-  // *** ***
-
-  // --- Hooks ---
-  // const { fitView } = useReactFlow(); // Keep if fitView or other ReactFlow methods are needed directly
 
   const {
     selectedNode,
@@ -97,15 +99,17 @@ function FlowContent() {
     clearSelectionAndCloseSidebar,
     toggleFabMenu,
     isConfigurableNode,
-  } = useFlowEvents(); // Manages selection, UI toggles, loads initial atom state
+  } = useFlowEvents();
 
-  const { onNodesChange, onEdgesChange, onConnect } = useFlowCallbacks(); // Manages graph interactions -> updates atoms
+  const { onNodesChange, onEdgesChange, onConnect } = useFlowCallbacks();
 
   const {
     updateStartNode,
     updateIntentNode,
     updateActionNode,
     updateFormNode,
+    updateScriptNode,
+    updateIfNode, // --- ADDED updateIfNode ---
     handleAddNode,
     handleAddNewIntentDefinition,
     handleAddNewActionDefinition,
@@ -115,31 +119,27 @@ function FlowContent() {
     definedActions,
     setDefinedActions,
     setSelectedNode,
-  }); // Manages node data manipulation -> updates atoms
+  });
 
   const { exportFlowData, isLoading, isTrained } = useFlowExport({
     projectId: "Flow1",
     intents,
     definedActions,
-  }); // Manages backend interactions
+  });
 
-  // --- Chat State & Handlers ---
   const [messages, setMessages] = useState<
     Array<{ role: string; content: string }>
   >([]);
 
   const handleNewMessage = (text: string) => {
     const userMessage = { role: "user", content: text };
-    const userFinalMessage = userMessage.content;
-    console.log("USERMESSAGE", userMessage);
-    setMessages((prevMessages) => [...prevMessages, userFinalMessage]);
+    setMessages((prevMessages) => [...prevMessages, userMessage]);
   };
   const onBotResponse = (response: string) => {
     const botMessage = { role: "assistant", content: response };
     setMessages((prevMessages) => [...prevMessages, botMessage]);
   };
 
-  // Save definitions to localStorage
   useEffect(() => {
     if (definedActions.length > 0 || localStorage.getItem("definedActions")) {
       localStorage.setItem("definedActions", JSON.stringify(definedActions));
@@ -152,7 +152,6 @@ function FlowContent() {
     }
   }, [intents]);
 
-  // --- Node Types ---
   const nodeTypes: NodeTypes = useMemo(
     () => ({
       start: StartNode,
@@ -160,15 +159,14 @@ function FlowContent() {
       action: ActionNode,
       end: EndNode,
       form: FormNode,
+      script: ScriptNode,
+      if: IfNode, // --- ADDED IF NODE TYPE ---
     }),
     []
   );
 
-  // Effect to fit view once nodes are loaded initially
   const { fitView } = useReactFlow();
   useEffect(() => {
-    // Only fit view if there are nodes and maybe not on every subsequent node change
-    // A small delay can help ensure the layout engine has processed the nodes
     if (nodes.length > 0) {
       const timeoutId = setTimeout(
         () => fitView({ duration: 300, padding: 0.1 }),
@@ -176,9 +174,9 @@ function FlowContent() {
       );
       return () => clearTimeout(timeoutId);
     }
-  }, [nodes.length, fitView]); // Depend on node count
+  }, [nodes.length, fitView]);
 
-  const callPredictApi = async (message) => {
+  const callPredictApi = async (message: string) => {
     try {
       const res = await fetch(
         `${import.meta.env.VITE_BACKEND_BASE_URL}/predict`,
@@ -204,15 +202,10 @@ function FlowContent() {
       return "Sorry, something went wrong!";
     }
   };
-  const handleSelect = (value: string) => {
-    toast.success(`Selected: ${value}`);
-  };
 
-  // --- Render ---
   return (
     <div className="h-screen w-screen flex overflow-hidden bg-gray-50 select-none">
       <div className="flex-grow h-full relative">
-        {/* *** Pass nodes and edges from Atoms to ReactFlow component *** */}
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -223,16 +216,13 @@ function FlowContent() {
           onPaneClick={clearSelectionAndCloseSidebar}
           nodeTypes={nodeTypes}
           defaultEdgeOptions={defaultEdgeOptions}
-          // fitView // fitView is now called programmatically in useEffect
           className="bg-gradient-to-br from-indigo-50 via-white to-blue-50"
           deleteKeyCode={["Backspace", "Delete"]}
         >
           <Controls />
           <Background />
         </ReactFlow>
-        {/* *** *** */}
 
-        {/* UI Components */}
         <FlowTopBar onTrain={exportFlowData} isLoading={isLoading} />
 
         <AnimatePresence>
@@ -266,7 +256,6 @@ function FlowContent() {
           fabRef={fabRef}
         />
 
-        {/* Conditional Chat Widget */}
         {isTrained ? (
           <>
             <Suspense
@@ -304,7 +293,6 @@ function FlowContent() {
         </div>
       ) : null}
 
-      {/* Conditional Sidebar */}
       {isSidebarOpen && selectedNode && isConfigurableNode(selectedNode) && (
         <div
           key={`${selectedNode.id}-${selectedNode.type}`}
@@ -314,10 +302,13 @@ function FlowContent() {
             selectedNode={selectedNode}
             intents={intents}
             definedActions={definedActions}
+            scriptUtilities={scriptUtilities}
             onUpdateStartNode={updateStartNode}
             onUpdateIntent={updateIntentNode}
             onUpdateAction={updateActionNode}
             onUpdateForm={updateFormNode}
+            onUpdateScriptNode={updateScriptNode}
+            onUpdateIfNode={updateIfNode} // --- PASS updateIfNode ---
             onAddNewIntentDefinition={handleAddNewIntentDefinition}
             onAddNewActionDefinition={handleAddNewActionDefinition}
             onClose={clearSelectionAndCloseSidebar}
@@ -328,13 +319,13 @@ function FlowContent() {
   );
 }
 
-// --- Main App Component ---
 function Flow() {
   return (
-    // ReactFlowProvider is essential for useReactFlow() hook to work
-    <ReactFlowProvider>
-      <FlowContent />
-    </ReactFlowProvider>
+    <DndProvider backend={HTML5Backend}>
+      <ReactFlowProvider>
+        <FlowContent />
+      </ReactFlowProvider>
+    </DndProvider>
   );
 }
 

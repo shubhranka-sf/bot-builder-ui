@@ -1,11 +1,11 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Bot, Zap, FlagOff, Plus, PlayCircle, ClipboardList } from 'lucide-react';
+import { Bot, Zap, FlagOff, Plus, PlayCircle, ClipboardList, FileCode, GitMerge } from 'lucide-react'; // Added GitMerge
 
 interface FlowFABProps {
     isOpen: boolean;
     toggleFabMenu: () => void;
-    onAddNode: (type: 'intent' | 'action' | 'end' | 'start' | 'form') => void;
+    onAddNode: (type: 'intent' | 'action' | 'end' | 'start' | 'form' | 'script' | 'if') => void; // Added 'if'
     fabRef: React.RefObject<HTMLDivElement>;
 }
 
@@ -21,23 +21,26 @@ const fabItemVariants = {
     exit: { opacity: 0, y: 10, scale: 0.9, transition: { duration: 0.1 } },
 };
 
-// Define colors here or import from a shared constants file
 const colorClasses: { [key: string]: { bg: string; hoverBg: string } } = {
-    purple: { bg: 'bg-purple-500', hoverBg: 'hover:bg-purple-600' },
+    indigo: { bg: 'bg-indigo-500', hoverBg: 'hover:bg-indigo-600' },
     blue: { bg: 'bg-blue-500', hoverBg: 'hover:bg-blue-600' },
     green: { bg: 'bg-green-500', hoverBg: 'hover:bg-green-600' },
     teal: { bg: 'bg-teal-500', hoverBg: 'hover:bg-teal-600' },
+    purple: { bg: 'bg-purple-500', hoverBg: 'hover:bg-purple-600' },
+    sky: { bg: 'bg-sky-500', hoverBg: 'hover:bg-sky-600' }, // --- ADDED SKY FOR IF NODE ---
     red: { bg: 'bg-red-500', hoverBg: 'hover:bg-red-600' },
     gray: { bg: 'bg-gray-500', hoverBg: 'hover:bg-gray-600' },
 };
 
 const nodeTypesToAdd = [
-    { type: 'start', Icon: PlayCircle, color: 'purple', title: 'Add Start' },
+    { type: 'start', Icon: PlayCircle, color: 'indigo', title: 'Add Start' },
     { type: 'intent', Icon: Bot, color: 'blue', title: 'Add Intent' },
     { type: 'action', Icon: Zap, color: 'green', title: 'Add Action' },
     { type: 'form', Icon: ClipboardList, color: 'teal', title: 'Add Form' },
+    { type: 'script', Icon: FileCode, color: 'purple', title: 'Add Script' },
+    { type: 'if', Icon: GitMerge, color: 'sky', title: 'Add If Condition' }, // --- ADDED IF NODE ---
     { type: 'end', Icon: FlagOff, color: 'red', title: 'Add End' },
-] as const; // Use 'as const' for stricter typing of 'type'
+] as const; 
 
 const FlowFAB: React.FC<FlowFABProps> = ({ isOpen, toggleFabMenu, onAddNode, fabRef }) => {
     return (

@@ -7,45 +7,58 @@ import { NodesAtom, EdgesAtom } from '../../store/flowAtom';
 
 function isConfigurableNode(node: Node | null): boolean {
     if (!node) return false;
-    return node.type === 'start' || node.type === 'intent' || node.type === 'action' || node.type === 'form';
+    // Add 'if' to configurable nodes
+    return ['start', 'intent', 'action', 'form', 'script', 'if'].includes(node.type || '');
 }
 
-/**
- * Hook for managing UI events, selection, and local storage saving.
- */
 export function useFlowEvents() {
     const [nodes, setNodes] = useAtom(NodesAtom);
     const [edges, setEdges] = useAtom(EdgesAtom);
     const [selectedNode, setSelectedNode] = useState<Node | null>(null);
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
     const [isFabMenuOpen, setIsFabMenuOpen] = useState(false);
-    const fabRef = useRef<HTMLDivElement>(null); // Ref for FAB menu click outside
+    const fabRef = useRef<HTMLDivElement>(null); 
     const { setNodes: rfSetNodes, getNodes: rfGetNodes } = useReactFlow();
 
-    // --- Selection Handling ---
     const onSelectionChange = useCallback(({ nodes: selectedNodes }: OnSelectionChangeParams) => {
         const newSelectedNode = selectedNodes.length === 1 ? selectedNodes[0] : null;
         const isConfigurable = newSelectedNode && isConfigurableNode(newSelectedNode);
-        setSelectedNode(newSelectedNode);
-        setIsFabMenuOpen(false); // Close FAB on selection change
-        setIsSidebarOpen(!!isConfigurable); // Open sidebar if the selected node is configurable
-    }, [setIsSidebarOpen, setIsFabMenuOpen]); // Added dependencies
+        
+        // If the newly selected node is different from the current, or if no node is selected
+        // and sidebar was open, close sidebar first.
+        // This prevents sidebar "jumping" content if it was already open for another node.
+        if (selectedNode?.id !== newSelectedNode?.id || (!newSelectedNode && isSidebarOpen)) {
+            setIsSidebarOpen(false); // Close first
+             // Then, if new node is configurable, open it after a short delay
+             if (isConfigurable) {
+                setTimeout(() => {
+                    setSelectedNode(newSelectedNode);
+                    setIsSidebarOpen(true);
+                }, 50); // Small delay for smoother transition if needed
+            } else {
+                setSelectedNode(newSelectedNode);
+            }
+        } else { // Same node selected or sidebar was closed
+            setSelectedNode(newSelectedNode);
+            if (isConfigurable) {
+                setIsSidebarOpen(true);
+            }
+        }
+        setIsFabMenuOpen(false);
+    }, [setIsSidebarOpen, setIsFabMenuOpen, selectedNode, isSidebarOpen]); 
 
     const clearSelectionAndCloseSidebar = useCallback(() => {
         setSelectedNode(null);
         setIsFabMenuOpen(false);
         setIsSidebarOpen(false);
-        // Also clear React Flow's internal selection state
         rfSetNodes(rfGetNodes().map((node) => ({ ...node, selected: false })));
-    }, [rfSetNodes, rfGetNodes]); // Added dependencies
+    }, [rfSetNodes, rfGetNodes]); 
 
-    // --- FAB Menu Logic ---
     const toggleFabMenu = useCallback(() => setIsFabMenuOpen((prev) => !prev), []);
 
     useEffect(() => {
-        // Handle clicks outside the FAB menu to close it
         const handleClickOutside = (e: MouseEvent) => {
-            if (fabRef.current && !fabRef.current.contains(e.target as Node)) {
+            if (fabRef.current && !fabRef.current.contains(e.target as HTMLElement)) {
                 setIsFabMenuOpen(false);
             }
         };
@@ -57,7 +70,6 @@ export function useFlowEvents() {
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, [isFabMenuOpen]);
 
-    // --- Local Storage Saving (Debounced) ---
     const saveNodesToLocalStorage = useDebouncedCallback((nodesToSave: Node[]) => {
         try {
             const serializableNodes = nodesToSave.map(n => ({ ...n, data: { ...n.data } }));
@@ -69,7 +81,6 @@ export function useFlowEvents() {
     }, 1000);
 
     useEffect(() => {
-        // Only save if nodes array is not the initial empty array from load error/fallback
         if (nodes.length > 0 || localStorage.getItem('nodes')) {
            saveNodesToLocalStorage(nodes);
         }
@@ -91,7 +102,6 @@ export function useFlowEvents() {
          }
     }, [edges, saveEdgesToLocalStorage]);
 
-    // --- Initialization Effect (Load from Local Storage) ---
     useEffect(() => {
         const storedNodes = localStorage.getItem('nodes');
         const storedEdges = localStorage.getItem('edges');
@@ -102,11 +112,10 @@ export function useFlowEvents() {
             } catch (e) {
                  console.error("Failed to parse nodes from localStorage", e);
                  toast.error("Failed to load nodes from storage.");
-                 localStorage.removeItem('nodes'); // Clear invalid data
+                 localStorage.removeItem('nodes'); 
             }
         } else {
-            // If no nodes stored, initialize with mock data (moved to initial state of atom)
-            console.log('No valid nodes in localStorage, relying on initial atom state.');
+            // console.log('No valid nodes in localStorage, relying on initial atom state.');
         }
 
         if (storedEdges && storedEdges !== '[]') {
@@ -115,18 +124,17 @@ export function useFlowEvents() {
              } catch (e) {
                  console.error("Failed to parse edges from localStorage", e);
                  toast.error("Failed to load edges from storage.");
-                 localStorage.removeItem('edges'); // Clear invalid data
+                 localStorage.removeItem('edges'); 
             }
         } else {
-            console.log('No valid edges in localStorage, relying on initial atom state.');
+            // console.log('No valid edges in localStorage, relying on initial atom state.');
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []); // Run only once on mount
+    }, [setNodes, setEdges]);
 
 
     return {
         selectedNode,
-        setSelectedNode, // Expose if needed externally
+        setSelectedNode, 
         isSidebarOpen,
         setIsSidebarOpen,
         isFabMenuOpen,
@@ -135,6 +143,6 @@ export function useFlowEvents() {
         onSelectionChange,
         clearSelectionAndCloseSidebar,
         toggleFabMenu,
-        isConfigurableNode, // Export helper function
+        isConfigurableNode, 
     };
 }

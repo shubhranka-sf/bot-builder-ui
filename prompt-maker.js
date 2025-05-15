@@ -1,9 +1,19 @@
 import fs from 'fs';
 const srcFolder = './src';
 const promptTextFile = `./prompt.txt`;
+const ignorePaths = ['./src/components/assets']
+
+if (fs.existsSync(promptTextFile)) {
+  fs.unlinkSync(promptTextFile);
+}
+
 
 const getFile = (path) => {
   // If path is a folder, go inside
+
+  if (ignorePaths.includes(path)) {
+    return;
+  }
 
   const fileOrFolder = fs.statSync(path);
   if (fileOrFolder.isDirectory()) {

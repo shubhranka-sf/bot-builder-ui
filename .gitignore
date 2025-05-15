@@ -6,3 +6,5 @@ node_modules
 .vscode
 *.prettierignore
 eslint.config.js
+fileWriter.js
+data.json
