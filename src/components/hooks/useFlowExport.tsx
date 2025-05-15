@@ -55,6 +55,7 @@ from rasa_sdk import Action, Tracker
 from rasa_sdk.executor import CollectingDispatcher
 from rasa_sdk.events import FollowupAction
 # import logging
+import datetime
 
 # logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ class ${className}(Action):
         followup_event = None
 
         try:
-            evaluation_result = eval(condition_to_evaluate, {"tracker": tracker}, {})
+            evaluation_result = eval(condition_to_evaluate, {"tracker": tracker, "datetime": datetime}, {})
         except Exception as e:
             # logger.error(f"Error evaluating condition '{{condition_to_evaluate}}' in action ${baseActionName}: {{e}}")
             dispatcher.utter_message(text=f"Error evaluating condition in action ${baseActionName}.")

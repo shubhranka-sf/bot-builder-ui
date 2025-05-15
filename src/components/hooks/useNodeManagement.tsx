@@ -29,6 +29,7 @@ from rasa_sdk import Action, Tracker
 from rasa_sdk.executor import CollectingDispatcher
 # from rasa_sdk.events import SlotSet
 # import logging
+import datetime
 
 # logger = logging.getLogger(__name__)
 
@@ -62,6 +63,7 @@ const createRasaIfConditionActionTemplate = (baseName: string, condition: string
 from rasa_sdk import Action, Tracker
 from rasa_sdk.executor import CollectingDispatcher
 from rasa_sdk.events import SlotSet
+import datetime
 # import logging
 
 # logger = logging.getLogger(__name__)
@@ -80,10 +82,10 @@ class ${className}(Action):
 
         # IMPORTANT: The 'tracker' object is available in the eval context.
         # You can use tracker.get_slot("slot_name"), tracker.latest_message, etc.
-        # Be cautious with eval if the condition string can be manipulated by users.
+        # Be cautious with eval if the condition string can be manispulated by users.
         try:
             # logger.debug(f"Evaluating condition: {condition_to_evaluate}")
-            evaluation_result = eval(condition_to_evaluate, {"tracker": tracker}, {})
+            evaluation_result = eval(condition_to_evaluate, {"tracker": tracker, "datetime": datetime}, {})
             # logger.debug(f"Condition evaluated to: {evaluation_result}")
         except Exception as e:
             # logger.error(f"Error evaluating condition '{condition_to_evaluate}': {e}")
