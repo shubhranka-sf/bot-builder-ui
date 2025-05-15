@@ -1,13 +1,10 @@
-// File: src/types.ts
-
-// Define shared types
-
 export interface ActionDefinition {
   id?: string; // Optional ID, might be added when stored
   title: string;
-  name: string; // Unique identifier
-  value: string; // Text content or function name
+  name: string; // Unique identifier (e.g., utter_greet, action_lookup_db)
   valueType: 'text' | 'function';
+  value?: string;
+  variations?: string[];
 }
 
 export interface AvailableFunction {
@@ -18,24 +15,62 @@ export interface AvailableFunction {
 export interface IntentDefinition {
   id: string;
   label: string;
-  examples?: string[]; // Added optional examples array
+  examples?: string[];
+  entities?: string[];
 }
 
-// --- Node Data Types ---
 export interface StartNodeData {
-  storyName?: string; // Optional initially, will be added
+  storyName?: string;
+  storyId?: string;
+  label?: string;
 }
 
 export interface IntentNodeData {
   intentId: string;
   examples?: string[];
+  entities?: string[];
+  label?: string;
 }
 
-export interface ActionNodeData extends Omit<ActionDefinition, 'id'> {} // Action node data IS the definition
+export interface ActionNodeData extends Omit<ActionDefinition, 'id'> {}
 
-export interface EndNodeData {
-  // Currently no specific data needed for EndNode
+export interface FormNodeData {
+    name: string;
+    formId: string;
+    slots: string[];
 }
 
-// Generic Node data type (useful if needed, though specific types are better)
-// export type FlowNodeData = StartNodeData | IntentNodeData | ActionNodeData | EndNodeData | {};
+export interface ScriptUtilityFunction {
+  id: string;
+  name: string;
+  description: string;
+  codeSnippet: (params?: any) => string;
+  icon?: React.ElementType;
+}
+
+export interface ScriptNodeData {
+  name?: string;
+  scriptContent?: string;
+  description?: string;
+}
+
+// --- ADDED: IfNodeData definition ---
+export interface IfNodeData {
+  name?: string; // Name/label for the if node
+  condition?: string; // Python expression to be evaluated
+  description?: string;
+  scriptContent?: string; // Holds the Rasa action template for this If node
+}
+
+export interface EndNodeData {}
+
+export interface ChatbotVersion {
+  version: string;
+  timestamp: string;
+  exportJson: any;
+  nodes: any[];
+  edges: any[];
+}
+
+// Generic Node data type
+// export type FlowNodeData = StartNodeData | IntentNodeData | ActionNodeData | EndNodeData | ScriptNodeData | IfNodeData | {};

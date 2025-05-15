@@ -1,12 +1,15 @@
+import { Route, Routes } from 'react-router-dom'
+import './index.css'; 
+import Home from './pages/Home';
 import Flow from './Flow';
-import './index.css'; // Ensure Tailwind is loaded
 
 function App() {
-  console.log(import.meta.env.VITE_BACKEND_BASE_URL);
+return (
 
-  return (
-    // The Flow component now includes the Sidebar internally
-    <Flow />
+    <Routes>
+      <Route path="/" element={<Home />} />
+      <Route path="/flow" element={<Flow />} />
+    </Routes>
   );
 }
 
